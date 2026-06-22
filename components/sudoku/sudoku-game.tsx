@@ -17,13 +17,14 @@ import {
 import { findConflicts, generatePuzzle, isSolved } from "@/lib/sudoku/generator";
 import {
   ENTRY_FEES,
-  formatAlnCredit,
+  ERRORS_BONUS_MAX,
+  HINTS_BONUS_MAX,
+  SOLVE_REWARD_BASE,
   type RewardBreakdown,
 } from "@/lib/alien/aln-store";
 import { useAln } from "@/lib/alien/use-aln";
 import { AlnStoreModal } from "@/components/alien/aln-store-modal";
 import { CaveatModal } from "@/components/alien/caveat-modal";
-import { RewardPreview } from "@/components/alien/reward-preview";
 import { RewardBreakdownModal } from "@/components/alien/reward-breakdown-modal";
 import { Board, type CellRenderMeta } from "./board";
 import { NumberPad } from "./number-pad";
@@ -527,64 +528,36 @@ export function SudokuGame() {
 
   const showOverlay = state.status === "won" || state.status === "lost";
 
-  return (
-    <div className="flex flex-col gap-4">
-      {/* ALN balance bar — always visible */}
-      <div
-        className="flex items-center justify-between rounded-md border px-3 py-2"
-        style={{
-          borderColor: "rgba(192,132,252,0.35)",
-          background:
-            "linear-gradient(90deg, rgba(192,132,252,0.12), transparent 70%)",
-        }}
-      >
-        <div className="flex items-center gap-2">
-          <div
-            className="flex h-7 w-7 items-center justify-center rounded-full border"
-            style={{
-              borderColor: "rgba(192,132,252,0.5)",
-              color: "#c084fc",
-              boxShadow: "0 0 8px rgba(192,132,252,0.3)",
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2 2 7l10 5 10-5-10-5Z" />
-              <path d="m2 17 10 5 10-5" />
-              <path d="m2 12 10 5 10-5" />
-            </svg>
-          </div>
-          <div className="flex flex-col leading-tight">
-            <span className="font-mono text-[9px] uppercase tracking-[0.25em] text-[var(--foreground-dim)]">
-              ALN Balance
-            </span>
-            <span
-              className="font-mono text-sm font-semibold"
-              style={{ color: "#c084fc", textShadow: "0 0 8px rgba(192,132,252,0.4)" }}
-            >
-              {aln.hydrated ? formatAlnCredit(aln.balance) : "—"}
-            </span>
-          </div>
-        </div>
-        <div className="flex gap-1.5">
-          <button
-            type="button"
-            onClick={() => setCaveatOpen(true)}
-            className="rounded-md border border-[rgba(251,191,36,0.4)] bg-[rgba(251,191,36,0.08)] px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#fbbf24] transition-all hover:bg-[rgba(251,191,36,0.16)]"
-            aria-label="Open caveats"
-          >
-            Caveats
-          </button>
-          <button
-            type="button"
-            onClick={() => setStoreOpen(true)}
-            className="rounded-md border border-[rgba(192,132,252,0.5)] bg-[rgba(192,132,252,0.12)] px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#c084fc] transition-all hover:bg-[rgba(192,132,252,0.22)]"
-            aria-label="Open ALN store"
-          >
-            + Buy ALN
-          </button>
-        </div>
-      </div>
+  // Compute the live potential payout (mirrors RewardPreview / computeReward
+  // but without writing to the store — just for the chip display).
+  const potentialPayout = useMemo(() => {
+    const base = SOLVE_REWARD_BASE[state.difficulty] ?? 5;
+    const hintsUsed = Math.max(0, state.maxHints - state.hintsLeft);
+    const hintsSlack = state.maxHints > 0 ? 1 - hintsUsed / state.maxHints : 1;
+    const errorsSlack =
+      state.maxMistakes > 0 ? 1 - state.mistakes / state.maxMistakes : 1;
+    const hintsMult = 1 + HINTS_BONUS_MAX * hintsSlack;
+    const errorsMult = 1 + ERRORS_BONUS_MAX * errorsSlack;
+    const gross = Math.round(base * hintsMult * errorsMult);
+    const remaining = Math.max(0, aln.daily.cap - aln.daily.earned);
+    return Math.min(gross, remaining);
+  }, [state.difficulty, state.mistakes, state.maxMistakes, state.hintsLeft, state.maxHints, aln.daily]);
 
+  // Listen for the open-caveats / open-store events dispatched by the
+  // compact Controls action buttons.
+  useEffect(() => {
+    const openCaveats = () => setCaveatOpen(true);
+    const openStore = () => setStoreOpen(true);
+    window.addEventListener("sudoku:open-caveats", openCaveats);
+    window.addEventListener("sudoku:open-store", openStore);
+    return () => {
+      window.removeEventListener("sudoku:open-caveats", openCaveats);
+      window.removeEventListener("sudoku:open-store", openStore);
+    };
+  }, []);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
       <Controls
         difficulty={state.difficulty}
         onDifficultyChange={handleDifficultyChange}
@@ -595,63 +568,56 @@ export function SudokuGame() {
         onHint={handleHint}
         hintsLeft={state.hintsLeft}
         alnBalance={aln.hydrated ? aln.balance : 0}
+        potentialPayout={potentialPayout}
+        dailyEarned={aln.daily.earned}
+        dailyCap={aln.daily.cap}
       />
-
-      {/* Live reward preview — shows what the player could earn right now */}
-      {state.status === "playing" && !generating && (
-        <RewardPreview
-          difficulty={state.difficulty}
-          mistakes={state.mistakes}
-          maxMistakes={state.maxMistakes}
-          hintsLeft={state.hintsLeft}
-          maxHints={state.maxHints}
-          dailyEarned={aln.daily.earned}
-          dailyCap={aln.daily.cap}
-        />
-      )}
 
       {/* Entry-denied notice — shown briefly when the player can't afford a tier */}
       {entryDenied && (
         <div
-          className="rounded-md border px-3 py-2 font-mono text-[11px]"
+          className="shrink-0 rounded-md border px-2 py-1 font-mono text-[10px]"
           style={{
             borderColor: "rgba(251,113,133,0.5)",
             background: "rgba(251,113,133,0.1)",
             color: "#fb7185",
           }}
         >
-          ⚠ Insufficient ALN for {DIFFICULTY_META[entryDenied].label} entry ({ENTRY_FEES[entryDenied]} ALN). Falling back to Rookie.
+          ⚠ Need {ENTRY_FEES[entryDenied]} ALN for {DIFFICULTY_META[entryDenied].label} — falling back to Rookie.
         </div>
       )}
 
-      <div className="relative">
-        <Board cells={renderCells} onCellClick={handleCellClick} />
+      {/* Board — flex-1 claims all remaining vertical space.
+          aspect-square keeps it square; max-h-full prevents overflow. */}
+      <div className="relative flex min-h-0 w-full flex-1 items-center justify-center">
+        <div className="relative aspect-square w-full max-h-full">
+          <Board cells={renderCells} onCellClick={handleCellClick} />
 
-        {generating && (
-          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-[rgba(5,8,19,0.85)] backdrop-blur-sm">
-            <div className="flex flex-col items-center gap-3">
-              <div className="orbit-spin h-8 w-8 rounded-full border-2 border-[var(--grid-line)] border-t-[var(--accent)]" />
-              <p
-                className="font-mono text-xs uppercase tracking-[0.3em]"
-                style={{ color: "var(--accent)" }}
-              >
-                Calibrating grid…
-              </p>
+          {generating && (
+            <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-[rgba(5,8,19,0.85)] backdrop-blur-sm">
+              <div className="flex flex-col items-center gap-2">
+                <div className="orbit-spin h-7 w-7 rounded-full border-2 border-[var(--grid-line)] border-t-[var(--accent)]" />
+                <p
+                  className="font-mono text-[10px] uppercase tracking-[0.3em]"
+                  style={{ color: "var(--accent)" }}
+                >
+                  Calibrating…
+                </p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {showOverlay && !generating && (
-          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-[rgba(5,8,19,0.9)] backdrop-blur-md">
-            <div className="flex flex-col items-center gap-3 px-6 text-center">
-              <div
-                className="flex h-16 w-16 items-center justify-center rounded-full border-2"
-                style={{
-                  borderColor:
-                    state.status === "won"
-                      ? "rgba(52,211,153,0.7)"
-                      : "rgba(251,113,133,0.7)",
-                  boxShadow:
+          {showOverlay && !generating && (
+            <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-[rgba(5,8,19,0.92)] backdrop-blur-md">
+              <div className="flex flex-col items-center gap-2 px-4 text-center">
+                <div
+                  className="flex h-12 w-12 items-center justify-center rounded-full border-2"
+                  style={{
+                    borderColor:
+                      state.status === "won"
+                        ? "rgba(52,211,153,0.7)"
+                        : "rgba(251,113,133,0.7)",
+                    boxShadow:
                     state.status === "won"
                       ? "0 0 24px rgba(52,211,153,0.5)"
                       : "0 0 24px rgba(251,113,133,0.5)",
@@ -690,36 +656,36 @@ export function SudokuGame() {
               </div>
               <div>
                 <p
-                  className="font-mono text-lg font-semibold uppercase tracking-wider"
+                  className="font-mono text-sm font-semibold uppercase tracking-wider"
                   style={{
                     color:
                       state.status === "won" ? "#34d399" : "#fb7185",
                     textShadow:
                       state.status === "won"
-                        ? "0 0 12px rgba(52,211,153,0.6)"
-                        : "0 0 12px rgba(251,113,133,0.6)",
+                        ? "0 0 10px rgba(52,211,153,0.6)"
+                        : "0 0 10px rgba(251,113,133,0.6)",
                   }}
                 >
                   {state.status === "won"
                     ? "Signal resolved"
                     : "Grid overloaded"}
                 </p>
-                <p className="mt-1 font-mono text-xs uppercase tracking-[0.25em] text-[var(--foreground-muted)]">
+                <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--foreground-muted)]">
                   {state.status === "won"
-                    ? `Time: ${formatElapsed(elapsed)} · Rank: ${DIFFICULTY_META[state.difficulty].label}`
-                    : "Re-calibrate and try again."}
+                    ? `${formatElapsed(elapsed)} · ${DIFFICULTY_META[state.difficulty].label}`
+                    : "Try again or purge."}
                 </p>
               </div>
-              <div className="mt-2 flex flex-col items-center gap-2">
+              <div className="mt-1 flex flex-col items-center gap-1.5">
                 <button
                   type="button"
                   onClick={handleNewGame}
-                  className="rounded-md border px-5 py-2 font-mono text-xs font-medium uppercase tracking-wider transition-all"
+                  className="rounded-md border px-4 py-1.5 font-mono text-[11px] font-medium uppercase tracking-wider transition-all"
                   style={{
                     borderColor: "var(--accent)",
                     background: "var(--accent)",
                     color: "#050813",
-                    boxShadow: "0 0 16px var(--accent-soft)",
+                    boxShadow: "0 0 12px var(--accent-soft)",
                   }}
                 >
                   New Mission
@@ -730,23 +696,24 @@ export function SudokuGame() {
                     type="button"
                     onClick={() => setCaveatOpen(true)}
                     disabled={aln.balance < aln.purgeCost(state.difficulty)}
-                    className="rounded-md border border-[rgba(251,191,36,0.5)] bg-[rgba(251,191,36,0.1)] px-4 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#fbbf24] transition-all hover:bg-[rgba(251,191,36,0.2)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="rounded-md border border-[rgba(251,191,36,0.5)] bg-[rgba(251,191,36,0.1)] px-3 py-1 font-mono text-[10px] font-medium uppercase tracking-wider text-[#fbbf24] transition-all hover:bg-[rgba(251,191,36,0.2)] disabled:cursor-not-allowed disabled:opacity-40"
                     style={{
                       boxShadow:
                         aln.balance >= aln.purgeCost(state.difficulty)
-                          ? "0 0 10px rgba(251,191,36,0.3)"
+                          ? "0 0 8px rgba(251,191,36,0.3)"
                           : "none",
                     }}
                   >
                     {aln.balance >= aln.purgeCost(state.difficulty)
-                      ? `Purge errors · ${aln.purgeCost(state.difficulty)} ALN`
-                      : `Need ${aln.purgeCost(state.difficulty)} ALN to purge errors`}
+                      ? `Purge · ${aln.purgeCost(state.difficulty)} ALN`
+                      : `Need ${aln.purgeCost(state.difficulty)} ALN`}
                   </button>
                 )}
               </div>
             </div>
           </div>
         )}
+        </div>
       </div>
 
       <NumberPad

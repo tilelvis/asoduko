@@ -42,7 +42,14 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <Providers>
-          <main className="mx-auto flex min-h-screen w-full max-w-md flex-col gap-5 px-4 pb-8 pt-6 sm:px-6">
+          {/*
+            Single-viewport layout: 100dvh tall, no scrolling.
+            The main element is a flex column that fills the screen between
+            the safe-area insets. Children use flex-1 / shrink-0 to claim
+            space. The board sizes itself with aspect-square inside the
+            flexible middle region.
+          */}
+          <main className="mx-auto flex h-[100dvh] w-full max-w-md flex-col gap-2 overflow-hidden px-3 pb-[calc(env(safe-area-inset-bottom)+8px)] pt-[calc(env(safe-area-inset-top)+8px)] sm:px-4">
             {children}
           </main>
         </Providers>

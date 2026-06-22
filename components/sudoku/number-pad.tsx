@@ -28,9 +28,9 @@ function NumberPadInner({
   canUndo,
 }: NumberPadProps) {
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex shrink-0 flex-col gap-1.5">
       {/* Digits 1-9 */}
-      <div className="grid grid-cols-9 gap-1.5 sm:gap-2">
+      <div className="grid grid-cols-9 gap-1">
         {Array.from({ length: 9 }, (_, i) => i + 1).map((n) => {
           const remaining = counts[n] ?? 0;
           const disabled = remaining <= 0 && !notesMode;
@@ -41,7 +41,7 @@ function NumberPadInner({
               onClick={() => onDigit(n)}
               disabled={disabled}
               className={[
-                "relative flex aspect-square items-center justify-center rounded-md border font-mono text-base transition-all sm:text-lg",
+                "relative flex aspect-square items-center justify-center rounded border font-mono text-sm transition-all",
                 disabled
                   ? "cursor-not-allowed border-[var(--grid-line)] bg-[var(--background-cell)] text-[var(--foreground-dim)]"
                   : notesMode
@@ -51,7 +51,7 @@ function NumberPadInner({
               style={
                 !disabled
                   ? {
-                      boxShadow: `0 0 8px var(--accent-faint)`,
+                      boxShadow: `0 0 6px var(--accent-faint)`,
                     }
                   : undefined
               }
@@ -59,7 +59,7 @@ function NumberPadInner({
             >
               {n}
               {!notesMode && remaining > 0 && (
-                <span className="absolute bottom-0.5 right-1 font-mono text-[8px] font-normal text-[var(--foreground-dim)]">
+                <span className="absolute bottom-0 right-0.5 font-mono text-[7px] font-normal text-[var(--foreground-dim)]">
                   {remaining}
                 </span>
               )}
@@ -69,7 +69,7 @@ function NumberPadInner({
       </div>
 
       {/* Action buttons */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-3 gap-1.5">
         <ActionButton
           onClick={onUndo}
           disabled={!canUndo}
@@ -149,19 +149,19 @@ function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex items-center justify-center gap-1.5 rounded-md border px-3 py-2.5 text-xs font-medium uppercase tracking-wider transition-all"
+      className="flex items-center justify-center gap-1 rounded border px-2 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider transition-all"
       style={{
         borderColor,
         background: bgColor,
         color: textColor,
-        boxShadow: active ? `0 0 10px ${activeColor}` : undefined,
+        boxShadow: active ? `0 0 8px ${activeColor}` : undefined,
       }}
       aria-pressed={active}
       aria-label={label}
     >
       <svg
-        width="14"
-        height="14"
+        width="11"
+        height="11"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"

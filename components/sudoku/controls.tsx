@@ -1,6 +1,6 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import type { Difficulty } from "@/lib/sudoku/types";
 import {
   DIFFICULTY_CLUES,
@@ -18,8 +18,11 @@ interface ControlsProps {
   maxMistakes: number;
   onHint: () => void;
   hintsLeft: number;
-  /** Current ALN balance (for tier-affordability check). */
   alnBalance: number;
+  /** Compact potential payout (ALN) to show as a chip. */
+  potentialPayout: number;
+  dailyEarned: number;
+  dailyCap: number;
 }
 
 function formatTime(total: number): string {
@@ -30,6 +33,16 @@ function formatTime(total: number): string {
   return `${m}:${s}`;
 }
 
+/**
+ * Compact single-row control strip:
+ *
+ *   [⏱ 00:42] [✗ 2/5] [💡 3] [+ 47 ALN] [▾ Transcendent]
+ *
+ * The tier dropdown opens on click and shows entry/base per tier.
+ * Below the strip sits the action row: Hint · Caveats · Buy ALN · New Mission.
+ *
+ * All elements use shrink-0 so the board keeps all the flexible vertical space.
+ */
 function ControlsInner({
   difficulty,
   onDifficultyChange,
@@ -40,209 +53,266 @@ function ControlsInner({
   onHint,
   hintsLeft,
   alnBalance,
+  potentialPayout,
+  dailyEarned,
+  dailyCap,
 }: ControlsProps) {
   const meta = DIFFICULTY_META[difficulty];
-  const entryFee = ENTRY_FEES[difficulty] ?? 0;
-  const baseReward = SOLVE_REWARD_BASE[difficulty] ?? 0;
+  const [tierOpen, setTierOpen] = useState(false);
+
+  const errorTone =
+    mistakes >= maxMistakes
+      ? "#fb7185"
+      : mistakes > 0
+        ? "#fbbf24"
+        : "var(--foreground)";
 
   return (
-    <div className="flex flex-col gap-3">
-      {/* Stats row — three holographic readouts */}
-      <div className="grid grid-cols-3 gap-2">
-        <Stat label="Time" value={formatTime(elapsedSeconds)} />
-        <Stat
-          label="Errors"
+    <div className="relative flex shrink-0 flex-col gap-1.5">
+      {/* Stats chips row */}
+      <div className="flex items-center gap-1.5">
+        <Chip label="⏱" value={formatTime(elapsedSeconds)} />
+        <Chip
+          label="✗"
           value={`${mistakes}/${maxMistakes}`}
-          tone={
-            mistakes >= maxMistakes
-              ? "error"
-              : mistakes > 0
-                ? "warn"
-                : "default"
-          }
+          color={errorTone}
         />
-        <Stat label="Hints" value={`${hintsLeft}`} />
-      </div>
+        <Chip label="💡" value={`${hintsLeft}`} />
+        <Chip
+          label="▲"
+          value={`${potentialPayout}`}
+          color="#34d399"
+          title={`Potential payout (today: ${dailyEarned}/${dailyCap} ALN)`}
+        />
 
-      {/* Active difficulty banner */}
-      <div
-        className="flex items-center justify-between rounded-md border px-3 py-2"
-        style={{
-          borderColor: `${meta.accent}55`,
-          background: `linear-gradient(90deg, ${meta.accent}22, transparent 70%)`,
-          boxShadow: `0 0 12px ${meta.accent}33, inset 0 0 8px ${meta.accent}11`,
-        }}
-      >
-        <div className="flex flex-col">
-          <span
-            className="font-mono text-[10px] uppercase tracking-[0.25em]"
-            style={{ color: meta.accent }}
-          >
-            Rank · {meta.tagline}
-          </span>
-          <span
-            className="font-mono text-base font-semibold"
+        {/* Tier pill — opens dropdown */}
+        <button
+          type="button"
+          onClick={() => setTierOpen((v) => !v)}
+          className="ml-auto flex items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-wider transition-all"
+          style={{
+            borderColor: `${meta.accent}88`,
+            color: meta.accent,
+            background: `${meta.accent}1a`,
+            boxShadow: `0 0 6px ${meta.accent}33`,
+          }}
+          aria-expanded={tierOpen}
+          title={`${meta.label} · Entry ${ENTRY_FEES[difficulty] || "FREE"} ALN · Base +${SOLVE_REWARD_BASE[difficulty] || 0}`}
+        >
+          {meta.label}
+          <svg
+            width="8"
+            height="8"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
             style={{
-              color: meta.accent,
-              textShadow: `0 0 8px ${meta.accent}88`,
+              transform: tierOpen ? "rotate(180deg)" : "rotate(0deg)",
+              transition: "transform 0.15s ease",
             }}
           >
-            {meta.label}
-          </span>
-        </div>
-        <div className="flex flex-col items-end gap-0.5">
-          <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-wider">
-            <div className="flex flex-col items-end">
-              <span className="text-[var(--foreground-dim)]">Entry</span>
-              <span
-                className="text-[#fb7185]"
-                style={{ textShadow: "0 0 6px rgba(251,113,133,0.4)" }}
-              >
-                {entryFee === 0 ? "FREE" : `−${entryFee}`}
-              </span>
-            </div>
-            <div className="flex flex-col items-end">
-              <span className="text-[var(--foreground-dim)]">Base</span>
-              <span
-                className="text-[#34d399]"
-                style={{ textShadow: "0 0 6px rgba(52,211,153,0.4)" }}
-              >
-                +{baseReward}
-              </span>
-            </div>
-            <div className="flex flex-col items-end">
-              <span className="text-[var(--foreground-dim)]">Clues</span>
-              <span className="text-[var(--foreground-muted)]">
-                <ClueCount difficulty={difficulty} />
-              </span>
-            </div>
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Tier dropdown — opens below the strip */}
+      {tierOpen && (
+        <>
+          {/* Click-away catcher */}
+          <div
+            className="fixed inset-0 z-10"
+            onClick={() => setTierOpen(false)}
+          />
+          <div
+            className="absolute right-0 top-full z-20 mt-1 w-full min-w-[260px] overflow-hidden rounded-md border bg-[var(--background-elevated)] shadow-2xl"
+            style={{ borderColor: "var(--grid-line)" }}
+          >
+            {DIFFICULTY_ORDER.map((d) => {
+              const m = DIFFICULTY_META[d];
+              const fee = ENTRY_FEES[d] ?? 0;
+              const base = SOLVE_REWARD_BASE[d] ?? 0;
+              const isActive = d === difficulty;
+              const affordable = alnBalance >= fee;
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => {
+                    onDifficultyChange(d);
+                    setTierOpen(false);
+                  }}
+                  disabled={!affordable && !isActive}
+                  className={[
+                    "flex w-full items-center justify-between gap-2 px-3 py-2 font-mono text-[11px] transition-colors",
+                    isActive
+                      ? ""
+                      : affordable
+                        ? "hover:bg-[var(--grid-line)]"
+                        : "cursor-not-allowed opacity-40",
+                  ].join(" ")}
+                  style={{
+                    background: isActive ? `${m.accent}1a` : undefined,
+                    color: isActive ? m.accent : "var(--foreground)",
+                  }}
+                >
+                  <div className="flex flex-col items-start leading-tight">
+                    <span className="font-semibold uppercase tracking-wider">
+                      {m.label}
+                    </span>
+                    <span className="text-[9px] text-[var(--foreground-dim)]">
+                      {m.tagline}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <span className="text-[#fb7185]">
+                      {fee === 0 ? "FREE" : `−${fee}`}
+                    </span>
+                    <span className="text-[#34d399]">+{base}</span>
+                    <span className="text-[var(--foreground-dim)]">
+                      {DIFFICULTY_CLUES[d]}c
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
           </div>
-        </div>
-      </div>
+        </>
+      )}
 
-      {/* Tier selector — 6 ranks horizontally scrollable on narrow screens */}
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--foreground-dim)]">
-          Tier
-        </span>
-        <div className="flex flex-1 gap-1 overflow-x-auto rounded-md border border-[var(--grid-line)] bg-[var(--background-elevated)] p-1">
-          {DIFFICULTY_ORDER.map((d) => {
-            const m = DIFFICULTY_META[d];
-            const isActive = d === difficulty;
-            const fee = ENTRY_FEES[d] ?? 0;
-            const affordable = alnBalance >= fee;
-            return (
-              <button
-                key={d}
-                type="button"
-                onClick={() => onDifficultyChange(d)}
-                className={[
-                  "flex-1 whitespace-nowrap rounded px-2 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider transition-all",
-                  isActive ? "tier-active" : "",
-                  !affordable && !isActive ? "opacity-40" : "",
-                ].join(" ")}
-                style={{
-                  color: isActive ? m.accent : "var(--foreground-dim)",
-                  background: isActive ? `${m.accent}22` : "transparent",
-                  border: `1px solid ${isActive ? `${m.accent}88` : "transparent"}`,
-                }}
-                aria-pressed={isActive}
-                title={fee > 0 ? `Entry: ${fee} ALN` : "Free entry"}
-              >
-                {m.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Action buttons */}
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          type="button"
+      {/* Action buttons row — compact */}
+      <div className="grid grid-cols-4 gap-1.5">
+        <ActionButton
           onClick={onHint}
           disabled={hintsLeft <= 0}
-          className={[
-            "flex items-center justify-center gap-1.5 rounded-md border px-3 py-2.5 font-mono text-xs font-medium uppercase tracking-wider transition-all",
-            hintsLeft <= 0
-              ? "cursor-not-allowed border-[var(--grid-line)] bg-[var(--background-cell)] text-[var(--foreground-dim)]"
-              : "border-[rgba(52,211,153,0.5)] bg-[rgba(52,211,153,0.08)] text-[#34d399] hover:bg-[rgba(52,211,153,0.16)]",
-          ].join(" ")}
-          style={
-            hintsLeft > 0
-              ? { boxShadow: "0 0 10px rgba(52,211,153,0.18)" }
-              : undefined
+          label="Hint"
+          color="#34d399"
+          icon={
+            <>
+              <path d="M9 18h6" />
+              <path d="M10 22h4" />
+              <path d="M2 9a10 10 0 0 1 20 0c0 4-3 6-4 8H6c-1-2-4-4-4-8z" />
+            </>
           }
-          aria-label="Get a hint"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 18h6" />
-            <path d="M10 22h4" />
-            <path d="M2 9a10 10 0 0 1 20 0c0 4-3 6-4 8H6c-1-2-4-4-4-8z" />
-          </svg>
-          Hint
-        </button>
-        <button
-          type="button"
+        />
+        <ActionButton
           onClick={onNewGame}
-          className="flex items-center justify-center gap-1.5 rounded-md border px-3 py-2.5 font-mono text-xs font-medium uppercase tracking-wider transition-all"
-          style={{
-            borderColor: `${meta.accent}`,
-            background: `linear-gradient(90deg, ${meta.accent}, ${meta.accent2})`,
-            color: "#050813",
-            boxShadow: `0 0 14px ${meta.accent}66`,
+          label="New"
+          color={meta.accent}
+          filled
+          icon={
+            <>
+              <path d="M21 12a9 9 0 1 1-9-9c2.4 0 4.6 1 6.2 2.5L21 6" />
+              <path d="M21 3v3h-3" />
+            </>
+          }
+        />
+        <ActionButton
+          onClick={() => {
+            /* Caveats modal triggered from parent — see sudoku-game */
+            const evt = new CustomEvent("sudoku:open-caveats");
+            window.dispatchEvent(evt);
           }}
-          aria-label="New game"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 12a9 9 0 1 1-9-9c2.4 0 4.6 1 6.2 2.5L21 6" />
-            <path d="M21 3v3h-3" />
-          </svg>
-          New Mission
-        </button>
+          label="Caveats"
+          color="#fbbf24"
+          icon={
+            <>
+              <path d="M12 2 2 7l10 5 10-5-10-5Z" />
+              <path d="m2 17 10 5 10-5" />
+              <path d="m2 12 10 5 10-5" />
+            </>
+          }
+        />
+        <ActionButton
+          onClick={() => {
+            const evt = new CustomEvent("sudoku:open-store");
+            window.dispatchEvent(evt);
+          }}
+          label="+ALN"
+          color="#c084fc"
+          icon={
+            <>
+              <path d="M12 2v20" />
+              <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+            </>
+          }
+        />
       </div>
     </div>
   );
 }
 
-function Stat({
+function Chip({
   label,
   value,
-  tone = "default",
+  color = "var(--foreground)",
+  title,
 }: {
   label: string;
   value: string;
-  tone?: "default" | "warn" | "error";
+  color?: string;
+  title?: string;
 }) {
-  const color =
-    tone === "error"
-      ? "#fb7185"
-      : tone === "warn"
-        ? "#fbbf24"
-        : "var(--foreground)";
-  const glow =
-    tone === "error"
-      ? "rgba(251,113,133,0.5)"
-      : tone === "warn"
-        ? "rgba(251,191,36,0.4)"
-        : "var(--accent-faint)";
   return (
-    <div className="glass-panel rounded-md px-3 py-2 text-center">
-      <div className="font-mono text-[9px] uppercase tracking-[0.25em] text-[var(--foreground-dim)]">
-        {label}
-      </div>
-      <div
-        className="font-mono text-base font-semibold tabular-nums"
-        style={{ color, textShadow: `0 0 8px ${glow}` }}
-      >
-        {value}
-      </div>
+    <div
+      className="glass-panel flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] tabular-nums"
+      title={title}
+    >
+      <span className="text-[var(--foreground-dim)]">{label}</span>
+      <span style={{ color }}>{value}</span>
     </div>
   );
 }
 
-function ClueCount({ difficulty }: { difficulty: Difficulty }) {
-  return <>{DIFFICULTY_CLUES[difficulty]}</>;
+function ActionButton({
+  onClick,
+  label,
+  icon,
+  disabled,
+  color,
+  filled,
+}: {
+  onClick: () => void;
+  label: string;
+  icon: React.ReactNode;
+  disabled?: boolean;
+  color: string;
+  filled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex items-center justify-center gap-1 rounded-md border px-2 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider transition-all disabled:cursor-not-allowed disabled:opacity-40"
+      style={{
+        borderColor: color,
+        background: filled
+          ? `linear-gradient(135deg, ${color}, ${color}cc)`
+          : `${color}1a`,
+        color: filled ? "#050813" : color,
+        boxShadow: disabled ? "none" : `0 0 6px ${color}33`,
+      }}
+      aria-label={label}
+    >
+      <svg
+        width="11"
+        height="11"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {icon}
+      </svg>
+      {label}
+    </button>
+  );
 }
 
 export const Controls = memo(ControlsInner);

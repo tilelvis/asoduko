@@ -56,7 +56,7 @@ export function Modal({
 
       {/* Panel */}
       <div
-        className={`relative z-10 w-full ${maxWidth} max-h-[90vh] overflow-y-auto rounded-t-xl border bg-[var(--background-elevated)] p-5 shadow-2xl sm:rounded-xl`}
+        className={`relative z-10 w-full ${maxWidth} max-h-[88dvh] overflow-y-auto rounded-t-xl border bg-[var(--background-elevated)] p-4 shadow-2xl sm:rounded-xl sm:p-5`}
         style={{
           borderColor: `${accent}55`,
           boxShadow: `0 0 24px ${accent}33, 0 8px 40px rgba(0,0,0,0.6)`,
