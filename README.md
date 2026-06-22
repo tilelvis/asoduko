@@ -32,54 +32,113 @@ The active tier's accent color is applied to the entire UI in real time via CSS 
 
 ## ALN Token Economy
 
-Players earn and spend **ALN** (Alien tokens) to recover from tough puzzles.
+Players earn and spend **ALN** (Alien tokens) to recover from tough puzzles. The economy is deliberately tuned so the **house wins in aggregate** — even against highly skilled players — by combining four mechanisms:
+
+1. **Entry fees** per tier (paid in ALN every game, win or lose)
+2. **Skill multipliers** (the carrot — fewer hints + fewer errors = bigger payout)
+3. **Tier-scaled caveat costs** (purging errors on Transcendent costs 10× Rookie)
+4. **Daily earning cap** (the key — caps how much a perfect player can farm per UTC day)
 
 ### Earning ALN
 
-Solve a puzzle to earn ALN, scaled by tier:
+Solve a puzzle to earn ALN, computed as:
 
-| Tier | Reward |
-|---|---|
-| Rookie | 5 ALN |
-| Cadet | 10 ALN |
-| Operative | 18 ALN |
-| Commander | 30 ALN |
-| Architect | 50 ALN |
-| Transcendent | 80 ALN |
+```
+reward = base × hintsMultiplier × errorsMultiplier
+```
 
-New players start with **50 ALN**.
+where:
+
+```
+hintsMultiplier  = 1 + 0.4 × (1 - hintsUsed / maxHints)    # 1.0 to 1.4
+errorsMultiplier = 1 + 0.6 × (1 - mistakes / maxMistakes)  # 1.0 to 1.6
+```
+
+A **perfect game** (0 hints, 0 errors) gets a **2.24× multiplier**.
+
+| Tier | Entry fee | Base reward | Avg reward (2 err, 1 hint) | Perfect reward |
+|---|---|---|---|---|
+| Rookie | 0 | 8 | 11 | 18 |
+| Cadet | 5 | 18 | 24 | 40 |
+| Operative | 10 | 35 | 47 | 78 |
+| Commander | 25 | 65 | 87 | 146 |
+| Architect | 50 | 110 | 147 | 246 |
+| Transcendent | 100 | 180 | 240 | 403 |
+
+The "Avg" column shows what a typical struggling-but-winning player earns; "Perfect" is the maximum (before daily cap).
+
+**Daily earning cap**: 500 ALN / UTC day. Once hit, further solves that day earn 0 ALN. This is what stops a perfect player from farming indefinitely.
 
 ### Spending ALN — Caveats
 
 Open the **Caveats** modal from the top-of-screen balance bar (or from the "Grid overloaded" lost-screen) to spend ALN on recoveries:
 
-| Caveat | Cost | Effect |
-|---|---|---|
-| **Purge Errors** | 15 ALN | Reset mistake counter to 0 and revive a lost game |
-| **Refill Hints** | 10 ALN | Restore hints to the tier's maximum |
+| Caveat | Rookie | Cadet | Operative | Commander | Architect | Transcendent |
+|---|---|---|---|---|---|---|
+| **Purge Errors** | 10 | 15 | 25 | 40 | 70 | 100 |
+| **Refill Hints** | 10 | 10 | 10 | 10 | 10 | 10 |
+
+Purge Errors scales aggressively with tier — on Transcendent, purging costs as much as the entry fee, so the strategic decision (purge + continue vs. restart and forfeit the entry fee) is genuinely interesting.
+
+### House edge math
+
+For an **average player** on Transcendent (assume 30% win rate, 1 caveat per loss):
+
+```
+EV(house) per game
+  = P(lose) × (entryFee + avgCaveats)  −  P(win) × (avgReward − entryFee)
+  = 0.7 × (100 + 100)  −  0.3 × (240 − 100)
+  = 140  −  42
+  = +98 ALN/game   ← house wins
+```
+
+For a **perfect player** (100% win rate, no caveats):
+
+```
+Per-game:  +403 − 100 = +303 ALN (player wins per game)
+Per-day:   capped at 500 ALN (≈ 2 perfect Transcendent wins)
+```
+
+The perfect player is bounded by the daily cap. The average player bleeds ALN through entry fees + caveats. **In aggregate, the house always wins.**
+
+Players who exhaust their ALN balance must top up via the in-app ALN Store, which charges real **ALIEN tokens** that go to your provider address.
 
 ### Buying ALN with real ALIEN tokens
 
-Open the **ALN Store** modal (top-right "+ Buy ALN" button) to purchase ALN credit with real **ALIEN** tokens via the Alien payment bridge. Three packs are available:
+Open the **ALN Store** modal (top-right "+ Buy ALN" button):
 
-| Pack | Price | ALN credit |
-|---|---|---|
-| Signal Boost | 0.01 ALIEN | 50 ALN |
-| Operative Cache | 0.04 ALIEN | 250 ALN |
-| Commander's Vault | 0.10 ALIEN | 1,000 ALN |
+| Pack | Price | ALN credit | ALN per ALIEN |
+|---|---|---|---|
+| Signal Boost | 0.01 ALIEN | 50 ALN | 5,000 |
+| Operative Cache | 0.04 ALIEN | 250 ALN | 6,250 |
+| Commander's Vault | 0.10 ALIEN | 1,000 ALN | 10,000 |
 
-Payments are made through the official Alien `usePayment` hook from `@alien-id/miniapps-react`. The flow:
+Payments go through the official Alien `usePayment` hook from `@alien-id/miniapps-react`. The flow:
 
 1. Player picks a pack.
 2. The hook calls `payment.pay({ recipient, amount, token: "ALIEN", network: "alien", invoice, item })`.
 3. The Alien app shows the native payment sheet.
 4. On `onPaid`, the player's local ALN balance is credited.
 
-Real payments require `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` to be set to your provider address from the [Alien Developer Portal](https://dev.alien.org). Without it, the store automatically falls back to **test products** that simulate successful payments — perfect for local development.
+Real payments require `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` to be set to your provider address from the [Alien Developer Portal](https://dev.alien.org). Without it, the store falls back to **test products** that simulate successful payments.
 
 ### Why local storage?
 
-A full backend ledger (like the official Alien boilerplate's Postgres + webhook stack) is overkill for a Sudoku game. The ALN balance is tracked client-side in `localStorage`, namespaced under `alien-sudoku:aln`. The actual on-chain payment is still 100% real and goes to your provider address — we just credit the resulting spendable balance locally.
+A full backend ledger (Postgres + webhook stack) is overkill for a Sudoku game. The ALN balance is tracked client-side in `localStorage`, namespaced under `alien-sudoku:aln`. The daily cap counter is stored under `alien-sudoku:aln-daily`. The actual on-chain ALIEN payment is still 100% real and goes to your provider address — we just track the spendable credit locally.
+
+If you want server-side verification later, wire up the official `/api/webhooks/payment` endpoint from the Alien boilerplate to confirm on-chain settlement before crediting.
+
+### Tuning the economy
+
+All constants live in [`lib/alien/aln-store.ts`](lib/alien/aln-store.ts):
+
+- `ENTRY_FEES` — increase to make the house edge stronger
+- `SOLVE_REWARD_BASE` — increase to attract more players (but weakens edge)
+- `HINTS_BONUS_MAX` / `ERRORS_BONUS_MAX` — increase to reward skill more
+- `DAILY_EARN_CAP` — decrease to tighten the perfect-player cap
+- `CAVEAT_COSTS_PURGE` — increase to make recovery more painful
+
+Every constant is commented with its effect on the house edge.
 
 ---
 

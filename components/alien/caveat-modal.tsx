@@ -4,13 +4,15 @@ import { useState } from "react";
 import { Modal } from "./modal";
 import { useAln } from "@/lib/alien/use-aln";
 import {
-  CAVEAT_COSTS,
+  CAVEAT_COSTS_REFILL,
   formatAlnCredit,
 } from "@/lib/alien/aln-store";
+import type { Difficulty } from "@/lib/sudoku/types";
 
 interface CaveatModalProps {
   open: boolean;
   onClose: () => void;
+  difficulty: Difficulty;
   currentMistakes: number;
   maxMistakes: number;
   currentHints: number;
@@ -24,21 +26,13 @@ const CAVEAT_ACCENT = "#fbbf24"; // amber — "caveat" warning color
 /**
  * Modal listing the available caveats the player can purchase with ALN.
  *
- * Caveats are "power-ups" that let the player recover from a near-loss
- * situation. They are intentionally limited to two recovery actions so
- * they don't trivialise the puzzle:
- *
- *   - Purge Errors: reset the mistake counter to 0. Doesn't touch the
- *     board state — just gives the player more breathing room.
- *   - Refill Hints: restore hints to the tier's max. Useful on harder
- *     tiers where the hint budget is tight.
- *
- * Both cost ALN. ALN can be earned by solving puzzles or bought with
- * real ALIEN tokens in the ALN Store modal.
+ * Purge Errors cost scales with tier (see CAVEAT_COSTS_PURGE in aln-store.ts).
+ * Refill Hints is a flat cost.
  */
 export function CaveatModal({
   open,
   onClose,
+  difficulty,
   currentMistakes,
   maxMistakes,
   currentHints,
@@ -50,21 +44,18 @@ export function CaveatModal({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const purgeDisabled =
-    currentMistakes === 0 || aln.balance < CAVEAT_COSTS.purgeErrors;
+  const purgeCost = aln.purgeCost(difficulty);
+  const purgeDisabled = currentMistakes === 0 || aln.balance < purgeCost;
   const refillDisabled =
-    currentHints >= maxHints || aln.balance < CAVEAT_COSTS.refillHints;
+    currentHints >= maxHints || aln.balance < CAVEAT_COSTS_REFILL;
 
   const handlePurge = () => {
     setError(null);
     setSuccess(null);
-    const ok = aln.spend(
-      CAVEAT_COSTS.purgeErrors,
-      "Caveat · Purge Errors",
-    );
+    const ok = aln.spend(purgeCost, `Caveat · Purge Errors (${difficulty})`);
     if (ok) {
       onPurgeErrors();
-      setSuccess("Errors purged. Mistake counter reset.");
+      setSuccess(`Errors purged · −${purgeCost} ALN`);
     } else {
       setError("Insufficient ALN balance.");
     }
@@ -73,13 +64,10 @@ export function CaveatModal({
   const handleRefill = () => {
     setError(null);
     setSuccess(null);
-    const ok = aln.spend(
-      CAVEAT_COSTS.refillHints,
-      "Caveat · Refill Hints",
-    );
+    const ok = aln.spend(CAVEAT_COSTS_REFILL, `Caveat · Refill Hints (${difficulty})`);
     if (ok) {
       onRefillHints();
-      setSuccess("Hints refilled.");
+      setSuccess(`Hints refilled · −${CAVEAT_COSTS_REFILL} ALN`);
     } else {
       setError("Insufficient ALN balance.");
     }
@@ -90,7 +78,7 @@ export function CaveatModal({
       open={open}
       onClose={onClose}
       title="Caveats"
-      subtitle="Spend ALN to recover"
+      subtitle={`Recovery options · ${difficulty} tier`}
       accent={CAVEAT_ACCENT}
     >
       <div className="flex flex-col gap-4">
@@ -141,8 +129,8 @@ export function CaveatModal({
         {/* Caveat: Purge Errors */}
         <CaveatCard
           title="Purge Errors"
-          description="Reset your mistake counter to 0. The board state is untouched — you keep your placed digits."
-          cost={CAVEAT_COSTS.purgeErrors}
+          description="Reset your mistake counter to 0. The board state is untouched — you keep your placed digits. Cost scales with tier."
+          cost={purgeCost}
           accent={CAVEAT_ACCENT}
           status={
             currentMistakes === 0
@@ -164,8 +152,8 @@ export function CaveatModal({
         {/* Caveat: Refill Hints */}
         <CaveatCard
           title="Refill Hints"
-          description={`Restore your hint budget to the tier maximum (${maxHints}).`}
-          cost={CAVEAT_COSTS.refillHints}
+          description={`Restore your hint budget to the tier maximum (${maxHints}). Flat cost regardless of tier.`}
+          cost={CAVEAT_COSTS_REFILL}
           accent={CAVEAT_ACCENT}
           status={
             currentHints >= maxHints

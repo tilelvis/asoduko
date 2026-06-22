@@ -16,12 +16,15 @@ import {
 } from "@/lib/sudoku/types";
 import { findConflicts, generatePuzzle, isSolved } from "@/lib/sudoku/generator";
 import {
-  SOLVE_REWARD,
+  ENTRY_FEES,
   formatAlnCredit,
+  type RewardBreakdown,
 } from "@/lib/alien/aln-store";
 import { useAln } from "@/lib/alien/use-aln";
 import { AlnStoreModal } from "@/components/alien/aln-store-modal";
 import { CaveatModal } from "@/components/alien/caveat-modal";
+import { RewardPreview } from "@/components/alien/reward-preview";
+import { RewardBreakdownModal } from "@/components/alien/reward-breakdown-modal";
 import { Board, type CellRenderMeta } from "./board";
 import { NumberPad } from "./number-pad";
 import { Controls } from "./controls";
@@ -303,15 +306,21 @@ export function SudokuGame() {
     createEmptyInitialState,
   );
   const [elapsed, setElapsed] = useState(0);
-  const [generating, setGenerating] = useState(true); // start in "generating" until first puzzle is built
+  const [generating, setGenerating] = useState(true);
   const [storeOpen, setStoreOpen] = useState(false);
   const [caveatOpen, setCaveatOpen] = useState(false);
+  const [rewardOpen, setRewardOpen] = useState(false);
+  const [lastBreakdown, setLastBreakdown] = useState<RewardBreakdown | null>(null);
+  const [entryDenied, setEntryDenied] = useState<Difficulty | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(false);
   const aln = useAln();
   const prevStatusRef = useRef<typeof state.status>("playing");
+  // Track hints used at the moment of the win — set when the win triggers,
+  // so the reward breakdown shows the correct count even after state resets.
+  const winSnapshotRef = useRef<{ hintsUsed: number; mistakes: number } | null>(null);
 
-  // Generate the first puzzle on mount (client-only).
+  // Generate the first puzzle on mount (client-only). Rookie is free.
   useEffect(() => {
     if (mountedRef.current) return;
     mountedRef.current = true;
@@ -320,17 +329,28 @@ export function SudokuGame() {
     setGenerating(false);
   }, []);
 
-  // ---------- award ALN when the puzzle is solved ----------
+  // ---------- award ALN with skill multipliers when the puzzle is solved ----------
   useEffect(() => {
     if (
       prevStatusRef.current === "playing" &&
       state.status === "won"
     ) {
-      const reward = SOLVE_REWARD[state.difficulty] ?? 5;
-      aln.earn(reward, `Solved ${DIFFICULTY_META[state.difficulty].label} puzzle`);
+      const hintsUsed = Math.max(0, state.maxHints - state.hintsLeft);
+      winSnapshotRef.current = { hintsUsed, mistakes: state.mistakes };
+      const breakdown = aln.awardSolve({
+        difficulty: state.difficulty,
+        mistakes: state.mistakes,
+        maxMistakes: state.maxMistakes,
+        hintsUsed,
+        maxHints: state.maxHints,
+      });
+      setLastBreakdown(breakdown);
+      // Auto-open the reward breakdown modal shortly after the win overlay.
+      const t = setTimeout(() => setRewardOpen(true), 1100);
+      return () => clearTimeout(t);
     }
     prevStatusRef.current = state.status;
-  }, [state.status, state.difficulty, aln]);
+  }, [state.status, state.difficulty, state.mistakes, state.maxMistakes, state.hintsLeft, state.maxHints, aln]);
 
   // ---------- apply active tier's accent color to <html> CSS vars ----------
   useEffect(() => {
@@ -354,15 +374,35 @@ export function SudokuGame() {
   }, [state.status, generating]);
 
   // ---------- new game ----------
-  const startNewGame = useCallback((difficulty: Difficulty) => {
-    setGenerating(true);
-    setElapsed(0);
-    setTimeout(() => {
-      const puzzle = generatePuzzle(difficulty);
-      dispatch({ type: "new_game", puzzle });
-      setGenerating(false);
-    }, 10);
-  }, []);
+  // Charges the entry fee (if any). If the player can't afford the tier,
+  // they're bumped down to Rookie (free) and shown an "entry denied" notice.
+  const startNewGame = useCallback(
+    (difficulty: Difficulty) => {
+      const fee = ENTRY_FEES[difficulty] ?? 0;
+      if (!aln.chargeEntry(difficulty)) {
+        // Can't afford — fall back to Rookie.
+        setEntryDenied(difficulty);
+        setTimeout(() => setEntryDenied(null), 4000);
+        const fallback: Difficulty = "rookie";
+        setGenerating(true);
+        setElapsed(0);
+        setTimeout(() => {
+          const puzzle = generatePuzzle(fallback);
+          dispatch({ type: "new_game", puzzle });
+          setGenerating(false);
+        }, 10);
+        return;
+      }
+      setGenerating(true);
+      setElapsed(0);
+      setTimeout(() => {
+        const puzzle = generatePuzzle(difficulty);
+        dispatch({ type: "new_game", puzzle });
+        setGenerating(false);
+      }, 10);
+    },
+    [aln],
+  );
 
   const handleNewGame = useCallback(() => {
     startNewGame(state.difficulty);
@@ -554,7 +594,35 @@ export function SudokuGame() {
         maxMistakes={state.maxMistakes}
         onHint={handleHint}
         hintsLeft={state.hintsLeft}
+        alnBalance={aln.hydrated ? aln.balance : 0}
       />
+
+      {/* Live reward preview — shows what the player could earn right now */}
+      {state.status === "playing" && !generating && (
+        <RewardPreview
+          difficulty={state.difficulty}
+          mistakes={state.mistakes}
+          maxMistakes={state.maxMistakes}
+          hintsLeft={state.hintsLeft}
+          maxHints={state.maxHints}
+          dailyEarned={aln.daily.earned}
+          dailyCap={aln.daily.cap}
+        />
+      )}
+
+      {/* Entry-denied notice — shown briefly when the player can't afford a tier */}
+      {entryDenied && (
+        <div
+          className="rounded-md border px-3 py-2 font-mono text-[11px]"
+          style={{
+            borderColor: "rgba(251,113,133,0.5)",
+            background: "rgba(251,113,133,0.1)",
+            color: "#fb7185",
+          }}
+        >
+          ⚠ Insufficient ALN for {DIFFICULTY_META[entryDenied].label} entry ({ENTRY_FEES[entryDenied]} ALN). Falling back to Rookie.
+        </div>
+      )}
 
       <div className="relative">
         <Board cells={renderCells} onCellClick={handleCellClick} />
@@ -661,18 +729,18 @@ export function SudokuGame() {
                   <button
                     type="button"
                     onClick={() => setCaveatOpen(true)}
-                    disabled={aln.balance < 15}
+                    disabled={aln.balance < aln.purgeCost(state.difficulty)}
                     className="rounded-md border border-[rgba(251,191,36,0.5)] bg-[rgba(251,191,36,0.1)] px-4 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#fbbf24] transition-all hover:bg-[rgba(251,191,36,0.2)] disabled:cursor-not-allowed disabled:opacity-40"
                     style={{
                       boxShadow:
-                        aln.balance >= 15
+                        aln.balance >= aln.purgeCost(state.difficulty)
                           ? "0 0 10px rgba(251,191,36,0.3)"
                           : "none",
                     }}
                   >
-                    {aln.balance >= 15
-                      ? "Purge errors · 15 ALN"
-                      : "Need 15 ALN to purge errors"}
+                    {aln.balance >= aln.purgeCost(state.difficulty)
+                      ? `Purge errors · ${aln.purgeCost(state.difficulty)} ALN`
+                      : `Need ${aln.purgeCost(state.difficulty)} ALN to purge errors`}
                   </button>
                 )}
               </div>
@@ -691,17 +759,24 @@ export function SudokuGame() {
         canUndo={state.history.length > 0}
       />
 
-      {/* ALN Store + Caveats modals */}
+      {/* ALN Store + Caveats + Reward breakdown modals */}
       <AlnStoreModal open={storeOpen} onClose={() => setStoreOpen(false)} />
       <CaveatModal
         open={caveatOpen}
         onClose={() => setCaveatOpen(false)}
+        difficulty={state.difficulty}
         currentMistakes={state.mistakes}
         maxMistakes={state.maxMistakes}
         currentHints={state.hintsLeft}
         maxHints={state.maxHints}
         onPurgeErrors={handlePurgeErrors}
         onRefillHints={handleRefillHints}
+      />
+      <RewardBreakdownModal
+        open={rewardOpen}
+        onClose={() => setRewardOpen(false)}
+        breakdown={lastBreakdown}
+        difficultyLabel={DIFFICULTY_META[state.difficulty].label}
       />
     </div>
   );

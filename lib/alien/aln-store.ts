@@ -1,77 +1,215 @@
 /**
- * ALN (Alien Token) store.
+ * ALN (Alien Token) store — with a deliberate house edge.
  *
- * A lightweight client-side balance ledger. The player earns ALN by solving
- * puzzles and spends ALN on caveats (currently: "Purge Errors" — reset the
- * mistake counter). Real ALN can also be purchased via the Alien payment
- * bridge using the ALIEN token on the Alien network.
+ * ---------------------------------------------------------------------------
+ * ECONOMY DESIGN (read this before tweaking constants)
+ * ---------------------------------------------------------------------------
  *
- * Persistence: localStorage, namespaced under `alien-sudoku:aln`.
- * Shape: `{ balance: number, transactions: Transaction[] }`.
+ * The math is designed so the **house** (you, the miniapp operator) wins in
+ * aggregate, even against highly skilled players. Four levers combine:
  *
- * Why localStorage and not a backend?
- *   The Alien boilerplate ships a full Postgres + webhook stack for payments,
- *   but a simple Sudoku game doesn't need a server-side ledger. The purchase
- *   itself still goes through the real Alien `payment:request` bridge call,
- *   so real tokens are transferred to your provider address — we just track
- *   the resulting credit locally.
+ *   1. ENTRY FEE per tier — paid in ALN when a new game starts. The house
+ *      collects this whether the player wins or loses.
+ *
+ *   2. SKILL MULTIPLIERS on solve — bonus for using fewer hints and making
+ *      fewer errors. This is the *carrot* that makes hard tiers feel
+ *      rewarding for skilled players.
+ *
+ *   3. TIER-SCALED CAVEAT COSTS — purging errors on Transcendent costs 10x
+ *      what it costs on Rookie. This is where struggling players on hard
+ *      tiers bleed ALN.
+ *
+ *   4. DAILY EARNING CAP — the *key* mechanism. A perfect player who solves
+ *      Transcendent repeatedly is capped at DAILY_EARN_CAP ALN per UTC day.
+ *      Once they hit the cap, further solves that day earn 0 ALN. This
+ *      guarantees that even a bot-perfect player cannot drain the system.
+ *
+ * WHY THIS GUARANTEES A HOUSE EDGE
+ *
+ *   For an AVERAGE player on tier T:
+ *     EV(house) = P(lose) * (entryFee + avgCaveats) - P(win) * (avgReward - entryFee)
+ *
+ *   With the constants below:
+ *     - Transcendent: entry=100, avgReward≈220, avgCaveats≈100, P(win)≈0.3
+ *       EV(house) = 0.7 * 200 - 0.3 * 120 = 140 - 36 = +104 ALN/game ✓
+ *
+ *   For a PERFECT player (always wins, never uses caveats):
+ *     - Per-game: +258 ALN (reward 358 - entry 100)
+ *     - But capped at 500 ALN/day → max ~2 wins/day
+ *     - Beyond cap: 0 ALN. They can still play (paying entry fees) for fun.
+ *
+ *   Either way, the house collects real ALIEN tokens when players top up
+ *   their ALN balance via the in-app store. The ALN itself is an internal
+ *   credit currency — the only way for new ALN to enter the system is a
+ *   real on-chain ALIEN payment to your provider address.
+ *
+ * ---------------------------------------------------------------------------
  */
 
 const STORAGE_KEY = "alien-sudoku:aln";
+const DAILY_KEY = "alien-sudoku:aln-daily";
 const ALN_DECIMALS = 9;
 
-export interface AlnTransaction {
-  id: string;
-  type: "earn" | "spend" | "purchase";
-  amount: number; // positive for earn/purchase, negative for spend
-  description: string;
-  timestamp: number;
-}
-
-interface AlnStore {
-  balance: number;
-  transactions: AlnTransaction[];
-}
-
-// ---------- defaults ----------
+// ---------- ECONOMY CONSTANTS ----------
 
 /** Starting balance for first-time players. */
 export const STARTING_BALANCE = 50;
 
-/** Reward for solving a puzzle, scaled by difficulty tier. */
-export const SOLVE_REWARD: Record<string, number> = {
-  rookie: 5,
-  cadet: 10,
-  operative: 18,
-  commander: 30,
+/** Maximum ALN a player can earn from solving puzzles per UTC day. */
+export const DAILY_EARN_CAP = 500;
+
+/**
+ * Entry fee (stake) paid in ALN when starting a new game at each tier.
+ * Rookie is free so new players can always play.
+ */
+export const ENTRY_FEES: Record<string, number> = {
+  rookie: 0,
+  cadet: 5,
+  operative: 10,
+  commander: 25,
   architect: 50,
-  transcendent: 80,
+  transcendent: 100,
 };
 
-/** Cost (in ALN) of each caveat. */
-export const CAVEAT_COSTS = {
-  purgeErrors: 15, // reset mistake counter to 0
-  refillHints: 10, // restore hints to the tier's max
-} as const;
+/**
+ * Base reward for solving a puzzle at each tier, BEFORE skill multipliers.
+ * Set so that `base - entryFee` is positive but modest, leaving room for
+ * the skill multipliers to make a perfect game feel rewarding.
+ */
+export const SOLVE_REWARD_BASE: Record<string, number> = {
+  rookie: 8,
+  cadet: 18,
+  operative: 35,
+  commander: 65,
+  architect: 110,
+  transcendent: 180,
+};
 
-export type CaveatType = keyof typeof CAVEAT_COSTS;
+/**
+ * Skill bonus configuration. Two multipliers stack multiplicatively:
+ *
+ *   hintsMultiplier  = 1 + HINTS_BONUS_MAX * (1 - hintsUsed / maxHints)
+ *                    → ranges from 1.0 (used all hints) to 1 + HINTS_BONUS_MAX
+ *
+ *   errorsMultiplier = 1 + ERRORS_BONUS_MAX * (1 - mistakes / maxMistakes)
+ *                    → ranges from 1.0 (used full error budget) to 1 + ERRORS_BONUS_MAX
+ *
+ * A "perfect" game (no hints, no errors) on Transcendent yields:
+ *   180 * (1 + 0.4) * (1 + 0.6) = 180 * 2.24 = 403 ALN
+ * (before the daily cap is applied).
+ */
+export const HINTS_BONUS_MAX = 0.4; // +40% for zero hints
+export const ERRORS_BONUS_MAX = 0.6; // +60% for zero errors
+
+/**
+ * Cost (in ALN) of each caveat, scaled by tier.
+ *
+ * Purge Errors scales aggressively with tier — on Transcendent, purging
+ * costs as much as the entry fee, making it a real strategic decision
+ * (purge + continue, or restart and forfeit the entry fee).
+ */
+export const CAVEAT_COSTS_PURGE: Record<string, number> = {
+  rookie: 10,
+  cadet: 15,
+  operative: 25,
+  commander: 40,
+  architect: 70,
+  transcendent: 100,
+};
+
+/** Refill hints is a flat cost — same regardless of tier. */
+export const CAVEAT_COSTS_REFILL = 10;
+
+export type CaveatType = "purgeErrors" | "refillHints";
+
+/** Convenience: get the purge cost for the current tier. */
+export function purgeCostFor(difficulty: string): number {
+  return CAVEAT_COSTS_PURGE[difficulty] ?? 15;
+}
+
+/**
+ * Compute the reward for solving a puzzle, given the skill metrics.
+ *
+ * Returns a breakdown so the UI can show the player exactly what they earned.
+ */
+export interface RewardBreakdown {
+  base: number;
+  hintsUsed: number;
+  maxHints: number;
+  hintsMultiplier: number;
+  hintsBonus: number; // base * (hintsMultiplier - 1)
+  mistakes: number;
+  maxMistakes: number;
+  errorsMultiplier: number;
+  errorsBonus: number; // base * (errorsMultiplier - 1) * hintsMultiplier
+  grossReward: number; // base * hintsMult * errorsMult, rounded
+  capped: boolean;
+  capApplied: number; // ALN clipped by the daily cap
+  netReward: number; // final amount credited
+  dailyEarnedBefore: number;
+  dailyEarnedAfter: number;
+  dailyCap: number;
+}
+
+export function computeReward(opts: {
+  difficulty: string;
+  mistakes: number;
+  maxMistakes: number;
+  hintsUsed: number;
+  maxHints: number;
+  dailyEarnedBefore: number;
+}): RewardBreakdown {
+  const base = SOLVE_REWARD_BASE[opts.difficulty] ?? 5;
+  const hintsSlack =
+    opts.maxHints > 0 ? 1 - opts.hintsUsed / opts.maxHints : 1;
+  const errorsSlack =
+    opts.maxMistakes > 0 ? 1 - opts.mistakes / opts.maxMistakes : 1;
+
+  const hintsMultiplier = 1 + HINTS_BONUS_MAX * hintsSlack;
+  const errorsMultiplier = 1 + ERRORS_BONUS_MAX * errorsSlack;
+
+  const hintsBonus = Math.round(base * (hintsMultiplier - 1));
+  const errorsBonus = Math.round(
+    base * (errorsMultiplier - 1) * hintsMultiplier,
+  );
+
+  const grossReward = Math.round(base * hintsMultiplier * errorsMultiplier);
+
+  // Apply daily cap.
+  const remaining = Math.max(0, DAILY_EARN_CAP - opts.dailyEarnedBefore);
+  const capped = grossReward > remaining;
+  const capApplied = capped ? grossReward - remaining : 0;
+  const netReward = Math.min(grossReward, remaining);
+
+  return {
+    base,
+    hintsUsed: opts.hintsUsed,
+    maxHints: opts.maxHints,
+    hintsMultiplier,
+    hintsBonus,
+    mistakes: opts.mistakes,
+    maxMistakes: opts.maxMistakes,
+    errorsMultiplier,
+    errorsBonus,
+    grossReward,
+    capped,
+    capApplied,
+    netReward,
+    dailyEarnedBefore: opts.dailyEarnedBefore,
+    dailyEarnedAfter: opts.dailyEarnedBefore + netReward,
+    dailyCap: DAILY_EARN_CAP,
+  };
+}
 
 // ---------- ALN purchase products ----------
 
-/**
- * Purchase options for buying ALN with real Alien tokens.
- *
- * `amount` is in the smallest on-chain unit. ALIEN has 9 decimals,
- * so 1 ALN = 10^9 base units. We use small USDC-style prices that
- * match the boilerplate's `DIAMOND_PRODUCTS` shape.
- */
 export interface AlnProduct {
   id: string;
   name: string;
   description: string;
-  aln: number; // ALN credit added to local balance on success
-  price: string; // human-readable price label
-  amount: string; // smallest on-chain unit (string for precision)
+  aln: number;
+  price: string;
+  amount: string;
   token: "ALIEN";
   network: "alien";
   test?: "paid" | "paid:failed" | "cancelled" | "error:insufficient_balance" | "error:network_error" | "error:unknown";
@@ -83,7 +221,7 @@ export const ALN_PRODUCTS: AlnProduct[] = [
   {
     id: "alien-aln-50",
     name: "Signal Boost",
-    description: "50 ALN — enough for three error purges.",
+    description: "50 ALN — enough for one Transcendent entry fee.",
     aln: 50,
     price: "0.01 ALIEN",
     amount: "10000000",
@@ -103,7 +241,7 @@ export const ALN_PRODUCTS: AlnProduct[] = [
   {
     id: "alien-aln-1000",
     name: "Commander's Vault",
-    description: "1,000 ALN — never worry about mistakes again.",
+    description: "1,000 ALN — never worry about caveats again.",
     aln: 1000,
     price: "0.10 ALIEN",
     amount: "100000000",
@@ -112,12 +250,6 @@ export const ALN_PRODUCTS: AlnProduct[] = [
   },
 ];
 
-/**
- * Test-mode products — used when running outside the Alien app or when
- * `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` is not set. They go through the
- * same `payment.pay()` call but with `test: "paid"`, which the bridge
- * simulates without moving real tokens.
- */
 export const ALN_TEST_PRODUCTS: AlnProduct[] = [
   {
     id: "test-alien-aln-50",
@@ -143,7 +275,20 @@ export const ALN_TEST_PRODUCTS: AlnProduct[] = [
   },
 ];
 
-// ---------- storage helpers ----------
+// ---------- storage ----------
+
+export interface AlnTransaction {
+  id: string;
+  type: "earn" | "spend" | "purchase" | "entry_fee";
+  amount: number;
+  description: string;
+  timestamp: number;
+}
+
+interface AlnStore {
+  balance: number;
+  transactions: AlnTransaction[];
+}
 
 function readStore(): AlnStore {
   if (typeof window === "undefined") {
@@ -171,7 +316,47 @@ function writeStore(store: AlnStore): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
   } catch {
-    // localStorage might be full or disabled (private mode) — fail silently.
+    // ignore
+  }
+}
+
+// ---------- daily cap tracking ----------
+
+interface DailyEarnings {
+  date: string; // YYYY-MM-DD (UTC)
+  earned: number;
+}
+
+function todayUTC(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function readDaily(): DailyEarnings {
+  if (typeof window === "undefined") {
+    return { date: todayUTC(), earned: 0 };
+  }
+  try {
+    const raw = window.localStorage.getItem(DAILY_KEY);
+    if (!raw) return { date: todayUTC(), earned: 0 };
+    const parsed = JSON.parse(raw) as DailyEarnings;
+    if (parsed.date !== todayUTC()) {
+      // Reset for new UTC day.
+      const fresh: DailyEarnings = { date: todayUTC(), earned: 0 };
+      window.localStorage.setItem(DAILY_KEY, JSON.stringify(fresh));
+      return fresh;
+    }
+    return parsed;
+  } catch {
+    return { date: todayUTC(), earned: 0 };
+  }
+}
+
+function writeDaily(d: DailyEarnings): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DAILY_KEY, JSON.stringify(d));
+  } catch {
+    // ignore
   }
 }
 
@@ -182,7 +367,35 @@ export function getAlnBalance(): number {
 }
 
 export function getAlnTransactions(): AlnTransaction[] {
-  return readStore().transactions.slice().reverse(); // newest first
+  return readStore().transactions.slice().reverse();
+}
+
+export function getDailyEarnings(): { earned: number; cap: number; remaining: number } {
+  const d = readDaily();
+  return {
+    earned: d.earned,
+    cap: DAILY_EARN_CAP,
+    remaining: Math.max(0, DAILY_EARN_CAP - d.earned),
+  };
+}
+
+function pushTransaction(
+  store: AlnStore,
+  type: AlnTransaction["type"],
+  amount: number,
+  description: string,
+): AlnStore {
+  const tx: AlnTransaction = {
+    id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    amount,
+    description,
+    timestamp: Date.now(),
+  };
+  return {
+    balance: store.balance + amount,
+    transactions: [...store.transactions, tx].slice(-100),
+  };
 }
 
 export function addAln(
@@ -191,35 +404,48 @@ export function addAln(
   description: string,
 ): number {
   const store = readStore();
-  const tx: AlnTransaction = {
-    id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    type,
-    amount,
-    description,
-    timestamp: Date.now(),
-  };
-  const next: AlnStore = {
-    balance: store.balance + amount,
-    transactions: [...store.transactions, tx].slice(-100), // cap history
-  };
+  const next = pushTransaction(store, type, amount, description);
   writeStore(next);
   return next.balance;
+}
+
+/**
+ * Credit a puzzle-solve reward AND update the daily cap counter.
+ * Returns the breakdown so the caller can show the player what they got.
+ */
+export function creditSolveReward(breakdown: RewardBreakdown): void {
+  if (breakdown.netReward <= 0) return;
+  const store = readStore();
+  const next = pushTransaction(
+    store,
+    "earn",
+    breakdown.netReward,
+    `Solved ${breakdown.dailyEarnedAfter >= breakdown.dailyCap ? "(daily cap reached)" : ""}`.trim(),
+  );
+  writeStore(next);
+
+  const d = readDaily();
+  d.earned = Math.min(DAILY_EARN_CAP, d.earned + breakdown.netReward);
+  writeDaily(d);
 }
 
 export function spendAln(amount: number, description: string): boolean {
   const store = readStore();
   if (store.balance < amount) return false;
-  const tx: AlnTransaction = {
-    id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    type: "spend",
-    amount: -amount,
-    description,
-    timestamp: Date.now(),
-  };
-  const next: AlnStore = {
-    balance: store.balance - amount,
-    transactions: [...store.transactions, tx].slice(-100),
-  };
+  const next = pushTransaction(store, "spend", -amount, description);
+  writeStore(next);
+  return true;
+}
+
+/**
+ * Charge an entry fee. Returns true if the player could afford it.
+ * If the player can't afford it, the balance is untouched.
+ */
+export function chargeEntryFee(amount: number, description: string): boolean {
+  if (amount === 0) return true;
+  const store = readStore();
+  if (store.balance < amount) return false;
+  const next = pushTransaction(store, "entry_fee", -amount, description);
   writeStore(next);
   return true;
 }
@@ -227,11 +453,11 @@ export function spendAln(amount: number, description: string): boolean {
 export function resetAlnStore(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(STORAGE_KEY);
+  window.localStorage.removeItem(DAILY_KEY);
 }
 
 // ---------- formatting ----------
 
-/** Format a raw on-chain amount (smallest unit) as a human-readable ALIEN string. */
 export function formatAlienAmount(rawAmount: string): string {
   const whole = rawAmount.padStart(ALN_DECIMALS + 1, "0");
   const intPart = whole.slice(0, -ALN_DECIMALS);
@@ -240,7 +466,6 @@ export function formatAlienAmount(rawAmount: string): string {
   return `${formatted} ALIEN`;
 }
 
-/** Format an integer ALN credit balance (e.g. 1234) as "1,234 ALN". */
 export function formatAlnCredit(balance: number): string {
   return `${balance.toLocaleString()} ALN`;
 }

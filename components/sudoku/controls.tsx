@@ -7,6 +7,7 @@ import {
   DIFFICULTY_META,
   DIFFICULTY_ORDER,
 } from "@/lib/sudoku/types";
+import { ENTRY_FEES, SOLVE_REWARD_BASE } from "@/lib/alien/aln-store";
 
 interface ControlsProps {
   difficulty: Difficulty;
@@ -17,6 +18,8 @@ interface ControlsProps {
   maxMistakes: number;
   onHint: () => void;
   hintsLeft: number;
+  /** Current ALN balance (for tier-affordability check). */
+  alnBalance: number;
 }
 
 function formatTime(total: number): string {
@@ -36,8 +39,11 @@ function ControlsInner({
   maxMistakes,
   onHint,
   hintsLeft,
+  alnBalance,
 }: ControlsProps) {
   const meta = DIFFICULTY_META[difficulty];
+  const entryFee = ENTRY_FEES[difficulty] ?? 0;
+  const baseReward = SOLVE_REWARD_BASE[difficulty] ?? 0;
 
   return (
     <div className="flex flex-col gap-3">
@@ -84,14 +90,33 @@ function ControlsInner({
             {meta.label}
           </span>
         </div>
-        <div className="flex flex-col items-end">
-          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-[var(--foreground-dim)]">
-            Clues
-          </span>
-          <span className="font-mono text-sm font-semibold text-[var(--foreground-muted)]">
-            {/* computed at runtime; show clue count from meta-derived constant */}
-            <ClueCount difficulty={difficulty} />
-          </span>
+        <div className="flex flex-col items-end gap-0.5">
+          <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-wider">
+            <div className="flex flex-col items-end">
+              <span className="text-[var(--foreground-dim)]">Entry</span>
+              <span
+                className="text-[#fb7185]"
+                style={{ textShadow: "0 0 6px rgba(251,113,133,0.4)" }}
+              >
+                {entryFee === 0 ? "FREE" : `−${entryFee}`}
+              </span>
+            </div>
+            <div className="flex flex-col items-end">
+              <span className="text-[var(--foreground-dim)]">Base</span>
+              <span
+                className="text-[#34d399]"
+                style={{ textShadow: "0 0 6px rgba(52,211,153,0.4)" }}
+              >
+                +{baseReward}
+              </span>
+            </div>
+            <div className="flex flex-col items-end">
+              <span className="text-[var(--foreground-dim)]">Clues</span>
+              <span className="text-[var(--foreground-muted)]">
+                <ClueCount difficulty={difficulty} />
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -104,6 +129,8 @@ function ControlsInner({
           {DIFFICULTY_ORDER.map((d) => {
             const m = DIFFICULTY_META[d];
             const isActive = d === difficulty;
+            const fee = ENTRY_FEES[d] ?? 0;
+            const affordable = alnBalance >= fee;
             return (
               <button
                 key={d}
@@ -112,6 +139,7 @@ function ControlsInner({
                 className={[
                   "flex-1 whitespace-nowrap rounded px-2 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider transition-all",
                   isActive ? "tier-active" : "",
+                  !affordable && !isActive ? "opacity-40" : "",
                 ].join(" ")}
                 style={{
                   color: isActive ? m.accent : "var(--foreground-dim)",
@@ -119,6 +147,7 @@ function ControlsInner({
                   border: `1px solid ${isActive ? `${m.accent}88` : "transparent"}`,
                 }}
                 aria-pressed={isActive}
+                title={fee > 0 ? `Entry: ${fee} ALN` : "Free entry"}
               >
                 {m.label}
               </button>
