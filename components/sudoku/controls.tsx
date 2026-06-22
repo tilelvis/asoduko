@@ -1,24 +1,15 @@
 "use client";
 
-import { memo, useState } from "react";
+import { memo } from "react";
 import type { Difficulty } from "@/lib/sudoku/types";
-import {
-  DIFFICULTY_CLUES,
-  DIFFICULTY_META,
-  DIFFICULTY_ORDER,
-} from "@/lib/sudoku/types";
-import { ENTRY_FEES, SOLVE_REWARD_BASE } from "@/lib/alien/aln-store";
 
 interface ControlsProps {
-  difficulty: Difficulty;
-  onDifficultyChange: (d: Difficulty) => void;
   onNewGame: () => void;
   elapsedSeconds: number;
   mistakes: number;
   maxMistakes: number;
   onHint: () => void;
   hintsLeft: number;
-  alnBalance: number;
   /** Compact potential payout (ALN) to show as a chip. */
   potentialPayout: number;
   dailyEarned: number;
@@ -26,40 +17,26 @@ interface ControlsProps {
 }
 
 function formatTime(total: number): string {
-  const m = Math.floor(total / 60)
-    .toString()
-    .padStart(2, "0");
+  const m = Math.floor(total / 60).toString().padStart(2, "0");
   const s = (total % 60).toString().padStart(2, "0");
   return `${m}:${s}`;
 }
 
 /**
- * Compact single-row control strip:
- *
- *   [⏱ 00:42] [✗ 2/5] [💡 3] [+ 47 ALN] [▾ Transcendent]
- *
- * The tier dropdown opens on click and shows entry/base per tier.
- * Below the strip sits the action row: Hint · Caveats · Buy ALN · New Mission.
- *
- * All elements use shrink-0 so the board keeps all the flexible vertical space.
+ * Compact control strip — stats chips row + action buttons row.
+ * The tier selector has moved to <TierBanner /> (swipeable carousel).
  */
 function ControlsInner({
-  difficulty,
-  onDifficultyChange,
   onNewGame,
   elapsedSeconds,
   mistakes,
   maxMistakes,
   onHint,
   hintsLeft,
-  alnBalance,
   potentialPayout,
   dailyEarned,
   dailyCap,
 }: ControlsProps) {
-  const meta = DIFFICULTY_META[difficulty];
-  const [tierOpen, setTierOpen] = useState(false);
-
   const errorTone =
     mistakes >= maxMistakes
       ? "#fb7185"
@@ -68,7 +45,7 @@ function ControlsInner({
         : "var(--foreground)";
 
   return (
-    <div className="relative flex shrink-0 flex-col gap-1.5">
+    <div className="flex shrink-0 flex-col gap-1.5">
       {/* Stats chips row */}
       <div className="flex items-center gap-1.5">
         <Chip label="⏱" value={formatTime(elapsedSeconds)} />
@@ -84,107 +61,10 @@ function ControlsInner({
           color="#34d399"
           title={`Potential payout (today: ${dailyEarned}/${dailyCap} ALN)`}
         />
-
-        {/* Tier pill — opens dropdown */}
-        <button
-          type="button"
-          onClick={() => setTierOpen((v) => !v)}
-          className="ml-auto flex items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-wider transition-all"
-          style={{
-            borderColor: `${meta.accent}88`,
-            color: meta.accent,
-            background: `${meta.accent}1a`,
-            boxShadow: `0 0 6px ${meta.accent}33`,
-          }}
-          aria-expanded={tierOpen}
-          title={`${meta.label} · Entry ${ENTRY_FEES[difficulty] || "FREE"} ALN · Base +${SOLVE_REWARD_BASE[difficulty] || 0}`}
-        >
-          {meta.label}
-          <svg
-            width="8"
-            height="8"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{
-              transform: tierOpen ? "rotate(180deg)" : "rotate(0deg)",
-              transition: "transform 0.15s ease",
-            }}
-          >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </button>
       </div>
 
-      {/* Tier dropdown — opens below the strip */}
-      {tierOpen && (
-        <>
-          {/* Click-away catcher */}
-          <div
-            className="fixed inset-0 z-10"
-            onClick={() => setTierOpen(false)}
-          />
-          <div
-            className="absolute right-0 top-full z-20 mt-1 w-full min-w-[260px] overflow-hidden rounded-md border bg-[var(--background-elevated)] shadow-2xl"
-            style={{ borderColor: "var(--grid-line)" }}
-          >
-            {DIFFICULTY_ORDER.map((d) => {
-              const m = DIFFICULTY_META[d];
-              const fee = ENTRY_FEES[d] ?? 0;
-              const base = SOLVE_REWARD_BASE[d] ?? 0;
-              const isActive = d === difficulty;
-              const affordable = alnBalance >= fee;
-              return (
-                <button
-                  key={d}
-                  type="button"
-                  onClick={() => {
-                    onDifficultyChange(d);
-                    setTierOpen(false);
-                  }}
-                  disabled={!affordable && !isActive}
-                  className={[
-                    "flex w-full items-center justify-between gap-2 px-3 py-2 font-mono text-[11px] transition-colors",
-                    isActive
-                      ? ""
-                      : affordable
-                        ? "hover:bg-[var(--grid-line)]"
-                        : "cursor-not-allowed opacity-40",
-                  ].join(" ")}
-                  style={{
-                    background: isActive ? `${m.accent}1a` : undefined,
-                    color: isActive ? m.accent : "var(--foreground)",
-                  }}
-                >
-                  <div className="flex flex-col items-start leading-tight">
-                    <span className="font-semibold uppercase tracking-wider">
-                      {m.label}
-                    </span>
-                    <span className="text-[9px] text-[var(--foreground-dim)]">
-                      {m.tagline}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px]">
-                    <span className="text-[#fb7185]">
-                      {fee === 0 ? "FREE" : `−${fee}`}
-                    </span>
-                    <span className="text-[#34d399]">+{base}</span>
-                    <span className="text-[var(--foreground-dim)]">
-                      {DIFFICULTY_CLUES[d]}c
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </>
-      )}
-
       {/* Action buttons row — compact */}
-      <div className="grid grid-cols-4 gap-1.5">
+      <div className="grid grid-cols-5 gap-1">
         <ActionButton
           onClick={onHint}
           disabled={hintsLeft <= 0}
@@ -201,7 +81,7 @@ function ControlsInner({
         <ActionButton
           onClick={onNewGame}
           label="New"
-          color={meta.accent}
+          color="var(--accent)"
           filled
           icon={
             <>
@@ -212,7 +92,6 @@ function ControlsInner({
         />
         <ActionButton
           onClick={() => {
-            /* Caveats modal triggered from parent — see sudoku-game */
             const evt = new CustomEvent("sudoku:open-caveats");
             window.dispatchEvent(evt);
           }}
@@ -231,12 +110,28 @@ function ControlsInner({
             const evt = new CustomEvent("sudoku:open-store");
             window.dispatchEvent(evt);
           }}
-          label="+ALN"
+          label="Buy"
           color="#c084fc"
           icon={
             <>
               <path d="M12 2v20" />
               <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+            </>
+          }
+        />
+        <ActionButton
+          onClick={() => {
+            const evt = new CustomEvent("sudoku:open-withdraw");
+            window.dispatchEvent(evt);
+          }}
+          label="Cash"
+          color="#34d399"
+          icon={
+            <>
+              <path d="M12 2v20" />
+              <path d="m17 17 5-5-5-5" />
+              <path d="M22 12H9" />
+              <path d="M12 7H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h7" />
             </>
           }
         />
@@ -287,7 +182,7 @@ function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex items-center justify-center gap-1 rounded-md border px-2 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider transition-all disabled:cursor-not-allowed disabled:opacity-40"
+      className="flex items-center justify-center gap-1 rounded-md border px-1 py-1.5 font-mono text-[9px] font-medium uppercase tracking-wider transition-all disabled:cursor-not-allowed disabled:opacity-40"
       style={{
         borderColor: color,
         background: filled
@@ -299,8 +194,8 @@ function ActionButton({
       aria-label={label}
     >
       <svg
-        width="11"
-        height="11"
+        width="10"
+        height="10"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"

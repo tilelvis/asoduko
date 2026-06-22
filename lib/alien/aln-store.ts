@@ -202,29 +202,48 @@ export function computeReward(opts: {
 }
 
 // ---------- ALN purchase products ----------
+//
+// EXCHANGE RATE: 10 ALN (game credit) = 1 ALIEN (real token)
+//   So 50 ALN = 5 ALIEN, 250 ALN = 25 ALIEN, 1000 ALN = 100 ALIEN
+//
+// ALIEN token has 9 decimals, so:
+//   5 ALIEN   = 5_000_000_000 base units
+//   25 ALIEN  = 25_000_000_000 base units
+//   100 ALIEN = 100_000_000_000 base units
+//
+// These are REAL amounts — no test products. Players pay real ALIEN tokens
+// and receive real game credit. Withdrawals convert back at the same 10:1
+// ratio (50 ALN → 5 ALIEN tokens sent to their wallet).
+
+export const ALN_PER_ALIEN = 10; // game ALN per 1 real ALIEN token
+const ALIEN_DECIMALS = 9;
+
+/** Convert real ALIEN tokens → smallest on-chain base units (string). */
+function alienToBaseUnits(alienTokens: number): string {
+  return String(Math.floor(alienTokens * Math.pow(10, ALIEN_DECIMALS)));
+}
 
 export interface AlnProduct {
   id: string;
   name: string;
   description: string;
-  aln: number;
-  price: string;
-  amount: string;
+  aln: number; // game ALN credit
+  alienTokens: number; // real ALIEN tokens charged
+  price: string; // human-readable price label
+  amount: string; // smallest on-chain base units
   token: "ALIEN";
   network: "alien";
-  test?: "paid" | "paid:failed" | "cancelled" | "error:insufficient_balance" | "error:network_error" | "error:unknown";
 }
-
-const RECIPIENT = process.env.NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS || "";
 
 export const ALN_PRODUCTS: AlnProduct[] = [
   {
     id: "alien-aln-50",
     name: "Signal Boost",
-    description: "50 ALN — enough for one Transcendent entry fee.",
+    description: "50 ALN — one Transcendent entry fee.",
     aln: 50,
-    price: "0.01 ALIEN",
-    amount: "10000000",
+    alienTokens: 5,
+    price: "5 ALIEN",
+    amount: alienToBaseUnits(5),
     token: "ALIEN",
     network: "alien",
   },
@@ -233,8 +252,9 @@ export const ALN_PRODUCTS: AlnProduct[] = [
     name: "Operative Cache",
     description: "250 ALN — best value for regular players.",
     aln: 250,
-    price: "0.04 ALIEN",
-    amount: "40000000",
+    alienTokens: 25,
+    price: "25 ALIEN",
+    amount: alienToBaseUnits(25),
     token: "ALIEN",
     network: "alien",
   },
@@ -243,37 +263,28 @@ export const ALN_PRODUCTS: AlnProduct[] = [
     name: "Commander's Vault",
     description: "1,000 ALN — never worry about caveats again.",
     aln: 1000,
-    price: "0.10 ALIEN",
-    amount: "100000000",
+    alienTokens: 100,
+    price: "100 ALIEN",
+    amount: alienToBaseUnits(100),
+    token: "ALIEN",
+    network: "alien",
+  },
+  {
+    id: "alien-aln-5000",
+    name: "Transcendent Reserve",
+    description: "5,000 ALN — for the dedicated puzzle operative.",
+    aln: 5000,
+    alienTokens: 500,
+    price: "500 ALIEN",
+    amount: alienToBaseUnits(500),
     token: "ALIEN",
     network: "alien",
   },
 ];
 
-export const ALN_TEST_PRODUCTS: AlnProduct[] = [
-  {
-    id: "test-alien-aln-50",
-    name: "Signal Boost (Test)",
-    description: "Test purchase — no real ALIEN transferred.",
-    aln: 50,
-    price: "0.01 ALIEN",
-    amount: "10000000",
-    token: "ALIEN",
-    network: "alien",
-    test: "paid",
-  },
-  {
-    id: "test-alien-aln-250",
-    name: "Operative Cache (Test)",
-    description: "Test purchase — no real ALIEN transferred.",
-    aln: 250,
-    price: "0.04 ALIEN",
-    amount: "40000000",
-    token: "ALIEN",
-    network: "alien",
-    test: "paid",
-  },
-];
+// Test products removed — all purchases are real now.
+// (Kept as empty array for backward compat with imports.)
+export const ALN_TEST_PRODUCTS: AlnProduct[] = [];
 
 // ---------- storage ----------
 

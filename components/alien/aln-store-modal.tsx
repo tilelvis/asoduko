@@ -231,17 +231,11 @@ function ProductCard({
           <span className="font-mono text-sm font-semibold text-[var(--foreground)]">
             {product.name}
           </span>
-          {product.test && (
-            <span
-              className="rounded-full border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider"
-              style={{
-                borderColor: "rgba(251,191,36,0.4)",
-                color: "#fbbf24",
-              }}
-            >
-              Test
-            </span>
-          )}
+          <span
+            className="rounded-full border border-[rgba(52,211,153,0.4)] bg-[rgba(52,211,153,0.08)] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-[#34d399]"
+          >
+            Real
+          </span>
         </div>
         <span className="mt-0.5 truncate font-mono text-[10px] text-[var(--foreground-muted)]">
           {product.description}

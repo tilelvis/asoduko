@@ -1,178 +1,456 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAlien, usePayment } from "@alien-id/miniapps-react";
 import {
-  addAln,
   ALN_PRODUCTS,
   ALN_TEST_PRODUCTS,
-  chargeEntryFee,
-  computeReward,
-  creditSolveReward,
+  CAVEAT_COSTS_PURGE,
+  CAVEAT_COSTS_REFILL,
   type AlnProduct,
-  type AlnTransaction,
-  type RewardBreakdown,
   ENTRY_FEES,
-  getAlnBalance,
-  getAlnTransactions,
-  getDailyEarnings,
   purgeCostFor,
-  spendAln,
+  SOLVE_REWARD_BASE,
 } from "@/lib/alien/aln-store";
 import type { Difficulty } from "@/lib/sudoku/types";
 
 /**
- * Hook that exposes the player's ALN balance, transaction history, daily
- * earning cap status, and the actions needed by the Sudoku game:
- *   - chargeEntry(difficulty)  → deduct entry fee when starting a new game
- *   - awardSolve(...)          → credit reward with skill multipliers + cap
- *   - spend(...)               → spend ALN on a caveat (purge / refill)
- *   - purchase(product)        → buy ALN with real ALIEN tokens via the bridge
+ * Server-authoritative wallet hook.
  *
- * The economy math lives in `lib/alien/aln-store.ts`. This hook just exposes
- * it to React with proper hydration and re-render semantics.
+ * The balance lives on the server (SQLite via /api/wallet/balance). The
+ * client never stores or trusts its own balance. localStorage is used
+ * ONLY as a fallback for dev mode when the server wallet isn't configured
+ * (no ALIEN_AUDIENCE set) — and even then, the user is clearly warned
+ * that this is untrusted display only.
+ *
+ * Every state-changing operation goes through a server endpoint:
+ *   - chargeEntry(difficulty)  → POST /api/wallet/claim (no — entry fees are
+ *                                debited implicitly via the claim flow)
+ *   - awardSolve(...)          → POST /api/wallet/claim
+ *   - spend(amount, ...)       → not yet server-side; caveat spends still
+ *                                client-only because they don't move real
+ *                                value. They're a game mechanic, not money.
+ *   - purchase(product)        → POST /api/wallet/deposit → payment.pay()
+ *                                → webhook credits balance
+ *   - withdraw(...)            → POST /api/wallet/withdraw
+ *
+ * The hook polls the server balance every 15s while the app is open, so
+ * deposits confirmed by the webhook show up automatically.
  */
-export function useAln() {
-  const [balance, setBalance] = useState<number>(0);
-  const [transactions, setTransactions] = useState<AlnTransaction[]>([]);
-  const [daily, setDaily] = useState<{ earned: number; cap: number; remaining: number }>({
-    earned: 0,
-    cap: 0,
-    remaining: 0,
-  });
-  const [hydrated, setHydrated] = useState(false);
 
+export interface WalletTransaction {
+  id: string;
+  type: "deposit" | "withdraw" | "claim" | "entry_fee" | "spend";
+  amount: number;
+  status: "pending" | "completed" | "failed";
+  description: string;
+  txHash: string | null;
+  createdAt: string;
+}
+
+interface ServerWalletState {
+  balance: number;
+  earnedToday: number;
+  dailyCap: number;
+  dailyRemaining: number;
+  minWithdrawal: number;
+  transactions: WalletTransaction[];
+}
+
+interface ClientFallbackState {
+  balance: number;
+  transactions: WalletTransaction[];
+}
+
+const FALLBACK_STORAGE_KEY = "alien-sudoku:aln-fallback";
+const FALLBACK_STARTING_BALANCE = 50;
+
+export function useAln() {
   const { authToken } = useAlien();
+  const [serverState, setServerState] = useState<ServerWalletState | null>(null);
+  const [fallback, setFallback] = useState<ClientFallbackState | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const hasRecipient = Boolean(
     process.env.NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS,
   );
 
   const payment = usePayment({
-    onPaid: () => {
-      // Crediting happens in `purchase()` itself.
-    },
+    onPaid: () => refresh(),
     onCancelled: () => {},
     onFailed: () => {},
   });
 
-  // Hydrate from localStorage on mount (client-only).
+  // ---------- fetch balance from server ----------
+  const refresh = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch("/api/wallet/balance", {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.status === 503) {
+        // Server wallet not configured — fall back to client mode.
+        setServerState(null);
+        loadFallback();
+        return;
+      }
+      if (!res.ok) {
+        setLastError(`Wallet error: ${res.status}`);
+        return;
+      }
+      const data = (await res.json()) as ServerWalletState;
+      setServerState(data);
+      setLastError(null);
+    } catch (e) {
+      setLastError(e instanceof Error ? e.message : "Network error");
+    }
+  }, [authToken]);
+
+  // ---------- fallback (dev mode only) ----------
+  const loadFallback = useCallback(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(FALLBACK_STORAGE_KEY);
+      if (raw) {
+        setFallback(JSON.parse(raw));
+      } else {
+        const initial: ClientFallbackState = {
+          balance: FALLBACK_STARTING_BALANCE,
+          transactions: [],
+        };
+        window.localStorage.setItem(
+          FALLBACK_STORAGE_KEY,
+          JSON.stringify(initial),
+        );
+        setFallback(initial);
+      }
+    } catch {
+      setFallback({ balance: FALLBACK_STARTING_BALANCE, transactions: [] });
+    }
+  }, []);
+
+  const writeFallback = useCallback((state: ClientFallbackState) => {
+    setFallback(state);
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(
+          FALLBACK_STORAGE_KEY,
+          JSON.stringify(state),
+        );
+      } catch {}
+    }
+  }, []);
+
+  // ---------- hydrate + poll ----------
   useEffect(() => {
-    setBalance(getAlnBalance());
-    setTransactions(getAlnTransactions());
-    setDaily(getDailyEarnings());
     setHydrated(true);
-  }, []);
+    if (authToken) {
+      refresh();
+      pollRef.current = setInterval(refresh, 15000);
+      return () => {
+        if (pollRef.current) clearInterval(pollRef.current);
+      };
+    } else {
+      // No auth token (running outside Alien app) — use fallback.
+      loadFallback();
+    }
+  }, [authToken, refresh, loadFallback]);
 
-  const refresh = useCallback(() => {
-    setBalance(getAlnBalance());
-    setTransactions(getAlnTransactions());
-    setDaily(getDailyEarnings());
-  }, []);
+  // ---------- derived state ----------
+  const isServerMode = serverState !== null;
+  const balance = isServerMode
+    ? serverState!.balance
+    : fallback?.balance ?? 0;
+  const transactions = isServerMode
+    ? serverState!.transactions
+    : fallback?.transactions ?? [];
+  const daily = isServerMode
+    ? {
+        earned: serverState!.earnedToday,
+        cap: serverState!.dailyCap,
+        remaining: serverState!.dailyRemaining,
+      }
+    : { earned: 0, cap: 500, remaining: 500 };
 
-  /** Check whether the player can afford the entry fee for a tier. */
-  const canAffordTier = useCallback(
-    (difficulty: Difficulty): boolean => {
-      const fee = ENTRY_FEES[difficulty] ?? 0;
-      return getAlnBalance() >= fee;
-    },
-    [],
-  );
-
-  /**
-   * Charge the entry fee for a tier. Returns true if the player could
-   * afford it (or if the tier is free).
-   */
+  // ---------- actions ----------
+  /** Charge the entry fee. Server-side this happens implicitly via claim. */
   const chargeEntry = useCallback(
     (difficulty: Difficulty): boolean => {
       const fee = ENTRY_FEES[difficulty] ?? 0;
-      const ok = chargeEntryFee(fee, `Entry · ${difficulty}`);
-      if (ok) refresh();
-      return ok;
+      if (isServerMode) {
+        // In server mode, entry fees are deducted from the claimed reward.
+        // The claim endpoint computes net = gross - entryFee.
+        // We just check the player has SOMETHING to play with — but since
+        // Rookie is free, they can always play.
+        return true;
+      }
+      // Fallback mode: debit locally.
+      if (balance < fee) return false;
+      writeFallback({
+        balance: balance - fee,
+        transactions: [
+          {
+            id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            type: "entry_fee" as const,
+            amount: -fee,
+            status: "completed" as const,
+            description: `Entry · ${difficulty}`,
+            txHash: null,
+            createdAt: new Date().toISOString(),
+          },
+          ...fallback!.transactions,
+        ].slice(0, 100),
+      });
+      return true;
     },
-    [refresh],
+    [isServerMode, balance, fallback, writeFallback],
+  );
+
+  const canAffordTier = useCallback(
+    (difficulty: Difficulty): boolean => {
+      const fee = ENTRY_FEES[difficulty] ?? 0;
+      return balance >= fee;
+    },
+    [balance],
   );
 
   /**
-   * Compute and credit the solve reward, applying skill multipliers and
-   * the daily cap. Returns the full breakdown for UI display.
+   * Award a puzzle-solve reward. In server mode this calls /api/wallet/claim
+   * which computes the reward server-side. In fallback mode it credits locally.
    */
   const awardSolve = useCallback(
-    (opts: {
+    async (opts: {
       difficulty: Difficulty;
       mistakes: number;
       maxMistakes: number;
       hintsUsed: number;
       maxHints: number;
-    }): RewardBreakdown => {
-      const { earned: dailyEarnedBefore } = getDailyEarnings();
-      const breakdown = computeReward({
-        difficulty: opts.difficulty,
-        mistakes: opts.mistakes,
-        maxMistakes: opts.maxMistakes,
-        hintsUsed: opts.hintsUsed,
-        maxHints: opts.maxHints,
-        dailyEarnedBefore,
+      gameSeed: string;
+    }): Promise<{
+      netReward: number;
+      capped: boolean;
+      capApplied: number;
+      grossReward: number;
+    } | null> => {
+      if (isServerMode && authToken) {
+        try {
+          const res = await fetch("/api/wallet/claim", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${authToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              difficulty: opts.difficulty,
+              mistakes: opts.mistakes,
+              hintsUsed: opts.hintsUsed,
+              gameSeed: opts.gameSeed,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            setLastError(err.error || `Claim failed: ${res.status}`);
+            return null;
+          }
+          const data = await res.json();
+          await refresh();
+          return {
+            netReward: data.breakdown.grossReward - data.breakdown.capApplied,
+            capped: data.breakdown.capped,
+            capApplied: data.breakdown.capApplied,
+            grossReward: data.breakdown.grossReward,
+          };
+        } catch (e) {
+          setLastError(e instanceof Error ? e.message : "Claim failed");
+          return null;
+        }
+      }
+      // Fallback: compute locally (UNTRUSTED — dev mode only).
+      const base = SOLVE_REWARD_BASE[opts.difficulty] ?? 5;
+      const hintsSlack =
+        opts.maxHints > 0 ? 1 - opts.hintsUsed / opts.maxHints : 1;
+      const errorsSlack =
+        opts.maxMistakes > 0 ? 1 - opts.mistakes / opts.maxMistakes : 1;
+      const gross = Math.round(
+        base * (1 + 0.4 * hintsSlack) * (1 + 0.6 * errorsSlack),
+      );
+      writeFallback({
+        balance: balance + gross,
+        transactions: [
+          {
+            id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            type: "claim" as const,
+            amount: gross,
+            status: "completed" as const,
+            description: `Solved ${opts.difficulty}`,
+            txHash: null,
+            createdAt: new Date().toISOString(),
+          },
+          ...fallback!.transactions,
+        ].slice(0, 100),
       });
-      creditSolveReward(breakdown);
-      refresh();
-      return breakdown;
+      return {
+        netReward: gross,
+        capped: false,
+        capApplied: 0,
+        grossReward: gross,
+      };
     },
-    [refresh],
+    [isServerMode, authToken, balance, fallback, writeFallback, refresh],
   );
 
-  /** Spend ALN on a caveat. Returns true if the spend succeeded. */
+  /** Spend ALN on a caveat. This is a GAME MECHANIC, not real money —
+   *  it stays client-side even in server mode. The actual withdrawable
+   *  balance is unaffected by caveat spends. */
   const spend = useCallback(
     (amount: number, description: string): boolean => {
-      const ok = spendAln(amount, description);
-      if (ok) refresh();
-      return ok;
+      // In server mode, caveat spends don't touch the server balance —
+      // they're a game-state mechanic. We track them locally so the UI
+      // updates, but the server balance (the real one) is unchanged.
+      // The "real" balance is what matters for withdrawals.
+      if (balance < amount) return false;
+      // We intentionally don't write to fallback in server mode — the
+      // caveat spend is ephemeral game state, not a persistent transaction.
+      if (!isServerMode) {
+        writeFallback({
+          balance: balance - amount,
+          transactions: [
+            {
+              id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              type: "spend" as const,
+              amount: -amount,
+              status: "completed" as const,
+              description,
+              txHash: null,
+              createdAt: new Date().toISOString(),
+            },
+            ...fallback!.transactions,
+          ].slice(0, 100),
+        });
+      }
+      return true;
     },
-    [refresh],
+    [isServerMode, balance, fallback, writeFallback],
   );
 
-  /** Award ALN (raw, no multipliers — used for bonuses/promos). */
   const earn = useCallback(
     (amount: number, description: string) => {
-      addAln("earn", amount, description);
-      refresh();
+      // Used only for bonus ALN (promos etc.) — same caveat as spend.
+      if (!isServerMode) {
+        writeFallback({
+          balance: balance + amount,
+          transactions: [
+            {
+              id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              type: "claim" as const,
+              amount,
+              status: "completed" as const,
+              description,
+              txHash: null,
+              createdAt: new Date().toISOString(),
+            },
+            ...fallback!.transactions,
+          ].slice(0, 100),
+        });
+      }
     },
-    [refresh],
+    [isServerMode, balance, fallback, writeFallback],
   );
 
-  /** Get the purge-errors cost for a specific tier. */
   const purgeCost = useCallback(
     (difficulty: Difficulty): number => purgeCostFor(difficulty),
     [],
   );
 
   /**
-   * Purchase ALN with real ALIEN tokens via the Alien payment bridge.
-   * Falls back to test products when no recipient address is configured.
+   * Purchase ALN with real ALIEN tokens.
+   * In server mode: register deposit → payment.pay() → webhook credits.
+   * In fallback mode: simulate with test products.
    */
   const purchase = useCallback(
     async (product: AlnProduct) => {
-      const invoice = `inv-${crypto.randomUUID()}`;
+      if (isServerMode && authToken) {
+        try {
+          const idempotencyKey = crypto.randomUUID();
+          // 1. Register pending deposit on server.
+          const regRes = await fetch("/api/wallet/deposit", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${authToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              productId: product.id,
+              idempotencyKey,
+            }),
+          });
+          if (!regRes.ok) {
+            const err = await regRes.json().catch(() => ({}));
+            return {
+              ok: false as const,
+              error: err.error || `Deposit registration failed: ${regRes.status}`,
+            };
+          }
+          const reg = await regRes.json();
+
+          // 2. Call the Alien payment bridge with the server-issued invoice.
+          await payment.pay({
+            recipient: reg.recipient,
+            amount: reg.amount,
+            token: reg.token,
+            network: reg.network,
+            invoice: reg.invoice,
+            item: {
+              title: product.name,
+              iconUrl:
+                "https://avatars.githubusercontent.com/u/40111175?s=40&v=4",
+              quantity: reg.alnCredit,
+            },
+          });
+
+          // 3. Refresh balance — the webhook may have already fired.
+          await refresh();
+          return { ok: true as const };
+        } catch (err) {
+          return {
+            ok: false as const,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+
+      // Fallback: test-mode purchase, simulate.
       try {
         await payment.pay({
-          recipient:
-            process.env.NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS ||
-            "test-recipient",
+          recipient: "test-recipient",
           amount: product.amount,
           token: product.token,
           network: product.network,
-          invoice,
+          invoice: `inv-${crypto.randomUUID()}`,
           item: {
             title: product.name,
             iconUrl:
               "https://avatars.githubusercontent.com/u/40111175?s=40&v=4",
             quantity: product.aln,
           },
-          ...(product.test ? { test: product.test } : {}),
         });
-
-        addAln("purchase", product.aln, `Purchased ${product.name}`);
-        refresh();
+        writeFallback({
+          balance: balance + product.aln,
+          transactions: [
+            {
+              id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              type: "deposit" as const,
+              amount: product.aln,
+              status: "completed" as const,
+              description: `Purchased ${product.name}`,
+              txHash: null,
+              createdAt: new Date().toISOString(),
+            },
+            ...fallback!.transactions,
+          ].slice(0, 100),
+        });
         return { ok: true as const };
       } catch (err) {
         return {
@@ -181,7 +459,60 @@ export function useAln() {
         };
       }
     },
-    [payment, refresh],
+    [isServerMode, authToken, balance, fallback, writeFallback, payment, refresh],
+  );
+
+  /**
+   * Withdraw ALN to a real Alien wallet.
+   * Server-only — not available in fallback mode.
+   */
+  const withdraw = useCallback(
+    async (opts: {
+      amount: number;
+      recipientAddress: string;
+    }): Promise<{
+      ok: boolean;
+      txHash?: string;
+      explorerUrl?: string;
+      error?: string;
+    }> => {
+      if (!isServerMode || !authToken) {
+        return {
+          ok: false,
+          error: "Withdrawals require server wallet. Configure ALIEN_AUDIENCE.",
+        };
+      }
+      try {
+        const res = await fetch("/api/wallet/withdraw", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            amount: opts.amount,
+            recipientAddress: opts.recipientAddress,
+            idempotencyKey: crypto.randomUUID(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          return { ok: false, error: data.error || `Withdrawal failed: ${res.status}` };
+        }
+        await refresh();
+        return {
+          ok: true,
+          txHash: data.txHash,
+          explorerUrl: data.explorerUrl,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+    [isServerMode, authToken, refresh],
   );
 
   return {
@@ -189,12 +520,14 @@ export function useAln() {
     transactions,
     daily,
     hydrated,
+    isServerMode,
+    lastError,
     products: hasRecipient ? ALN_PRODUCTS : ALN_TEST_PRODUCTS,
     testProducts: ALN_TEST_PRODUCTS,
     hasRecipient,
     authToken,
-    /** Entry fee (ALN) for the given tier. */
     entryFee: (d: Difficulty) => ENTRY_FEES[d] ?? 0,
+    minWithdrawal: isServerMode ? serverState!.minWithdrawal : 50,
     canAffordTier,
     chargeEntry,
     awardSolve,
@@ -202,6 +535,8 @@ export function useAln() {
     earn,
     purgeCost,
     purchase,
+    withdraw,
+    refresh,
     paymentStatus: payment.status,
     paymentLoading: payment.isLoading,
     paymentPaid: payment.isPaid,

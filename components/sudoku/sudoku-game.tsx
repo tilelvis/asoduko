@@ -26,6 +26,8 @@ import { useAln } from "@/lib/alien/use-aln";
 import { AlnStoreModal } from "@/components/alien/aln-store-modal";
 import { CaveatModal } from "@/components/alien/caveat-modal";
 import { RewardBreakdownModal } from "@/components/alien/reward-breakdown-modal";
+import { WithdrawModal } from "@/components/alien/withdraw-modal";
+import { TierBanner } from "@/components/sudoku/tier-banner";
 import { Board, type CellRenderMeta } from "./board";
 import { NumberPad } from "./number-pad";
 import { Controls } from "./controls";
@@ -45,12 +47,15 @@ interface GameState {
   cells: CellState[];
   solution: BoardArray;
   difficulty: Difficulty;
+  /** Unique seed for this game — sent to the server on claim so each game
+   *  can only be claimed once. Generated client-side, validated server-side. */
+  gameSeed: string;
   selectedIndex: number;
   notesMode: boolean;
   mistakes: number;
-  maxMistakes: number; // per-tier budget, snapshotted at game start
+  maxMistakes: number;
   hintsLeft: number;
-  maxHints: number; // per-tier budget, snapshotted at game start
+  maxHints: number;
   history: HistoryEntry[];
   status: "playing" | "won" | "lost";
 }
@@ -256,6 +261,7 @@ function reducer(state: GameState, action: Action): GameState {
         cells,
         solution: action.puzzle.solution,
         difficulty: action.puzzle.difficulty,
+        gameSeed: crypto.randomUUID(),
         selectedIndex: -1,
         notesMode: false,
         mistakes: 0,
@@ -289,6 +295,7 @@ function createEmptyInitialState(difficulty: Difficulty): GameState {
     })),
     solution: new Array(81).fill(0),
     difficulty,
+    gameSeed: "",
     selectedIndex: -1,
     notesMode: false,
     mistakes: 0,
@@ -311,6 +318,7 @@ export function SudokuGame() {
   const [storeOpen, setStoreOpen] = useState(false);
   const [caveatOpen, setCaveatOpen] = useState(false);
   const [rewardOpen, setRewardOpen] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [lastBreakdown, setLastBreakdown] = useState<RewardBreakdown | null>(null);
   const [entryDenied, setEntryDenied] = useState<Difficulty | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -334,24 +342,51 @@ export function SudokuGame() {
   useEffect(() => {
     if (
       prevStatusRef.current === "playing" &&
-      state.status === "won"
+      state.status === "won" &&
+      state.gameSeed // ensure we have a seed to claim with
     ) {
       const hintsUsed = Math.max(0, state.maxHints - state.hintsLeft);
       winSnapshotRef.current = { hintsUsed, mistakes: state.mistakes };
-      const breakdown = aln.awardSolve({
-        difficulty: state.difficulty,
-        mistakes: state.mistakes,
-        maxMistakes: state.maxMistakes,
-        hintsUsed,
-        maxHints: state.maxHints,
-      });
-      setLastBreakdown(breakdown);
-      // Auto-open the reward breakdown modal shortly after the win overlay.
-      const t = setTimeout(() => setRewardOpen(true), 1100);
-      return () => clearTimeout(t);
+      // awardSolve is async — fire and forget, store the breakdown when it resolves.
+      let cancelled = false;
+      aln
+        .awardSolve({
+          difficulty: state.difficulty,
+          mistakes: state.mistakes,
+          maxMistakes: state.maxMistakes,
+          hintsUsed,
+          maxHints: state.maxHints,
+          gameSeed: state.gameSeed,
+        })
+        .then((result) => {
+          if (cancelled || !result) return;
+          setLastBreakdown({
+            base: 0, // not returned from server; computed client-side below
+            hintsUsed,
+            maxHints: state.maxHints,
+            hintsMultiplier: 1,
+            hintsBonus: 0,
+            mistakes: state.mistakes,
+            maxMistakes: state.maxMistakes,
+            errorsMultiplier: 1,
+            errorsBonus: 0,
+            grossReward: result.grossReward,
+            capped: result.capped,
+            capApplied: result.capApplied,
+            netReward: result.netReward,
+            dailyEarnedBefore: 0,
+            dailyEarnedAfter: 0,
+            dailyCap: aln.daily.cap,
+          });
+          const t = setTimeout(() => setRewardOpen(true), 1100);
+          return () => clearTimeout(t);
+        });
+      return () => {
+        cancelled = true;
+      };
     }
     prevStatusRef.current = state.status;
-  }, [state.status, state.difficulty, state.mistakes, state.maxMistakes, state.hintsLeft, state.maxHints, aln]);
+  }, [state.status, state.difficulty, state.mistakes, state.maxMistakes, state.hintsLeft, state.maxHints, state.gameSeed, aln]);
 
   // ---------- apply active tier's accent color to <html> CSS vars ----------
   useEffect(() => {
@@ -543,31 +578,36 @@ export function SudokuGame() {
     return Math.min(gross, remaining);
   }, [state.difficulty, state.mistakes, state.maxMistakes, state.hintsLeft, state.maxHints, aln.daily]);
 
-  // Listen for the open-caveats / open-store events dispatched by the
-  // compact Controls action buttons.
+  // Listen for the open-caveats / open-store / open-withdraw events dispatched
+  // by the compact Controls action buttons.
   useEffect(() => {
     const openCaveats = () => setCaveatOpen(true);
     const openStore = () => setStoreOpen(true);
+    const openWithdraw = () => setWithdrawOpen(true);
     window.addEventListener("sudoku:open-caveats", openCaveats);
     window.addEventListener("sudoku:open-store", openStore);
+    window.addEventListener("sudoku:open-withdraw", openWithdraw);
     return () => {
       window.removeEventListener("sudoku:open-caveats", openCaveats);
       window.removeEventListener("sudoku:open-store", openStore);
+      window.removeEventListener("sudoku:open-withdraw", openWithdraw);
     };
   }, []);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <Controls
+      <TierBanner
         difficulty={state.difficulty}
         onDifficultyChange={handleDifficultyChange}
+        alnBalance={aln.hydrated ? aln.balance : 0}
+      />
+      <Controls
         onNewGame={handleNewGame}
         elapsedSeconds={elapsed}
         mistakes={state.mistakes}
         maxMistakes={state.maxMistakes}
         onHint={handleHint}
         hintsLeft={state.hintsLeft}
-        alnBalance={aln.hydrated ? aln.balance : 0}
         potentialPayout={potentialPayout}
         dailyEarned={aln.daily.earned}
         dailyCap={aln.daily.cap}
@@ -726,7 +766,7 @@ export function SudokuGame() {
         canUndo={state.history.length > 0}
       />
 
-      {/* ALN Store + Caveats + Reward breakdown modals */}
+      {/* ALN Store + Caveats + Reward breakdown + Withdraw modals */}
       <AlnStoreModal open={storeOpen} onClose={() => setStoreOpen(false)} />
       <CaveatModal
         open={caveatOpen}
@@ -745,6 +785,7 @@ export function SudokuGame() {
         breakdown={lastBreakdown}
         difficultyLabel={DIFFICULTY_META[state.difficulty].label}
       />
+      <WithdrawModal open={withdrawOpen} onClose={() => setWithdrawOpen(false)} />
     </div>
   );
 }

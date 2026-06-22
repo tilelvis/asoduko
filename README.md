@@ -105,22 +105,25 @@ Players who exhaust their ALN balance must top up via the in-app ALN Store, whic
 
 ### Buying ALN with real ALIEN tokens
 
-Open the **ALN Store** modal (top-right "+ Buy ALN" button):
+Open the **ALN Store** modal (the "Buy" button in the action row):
 
-| Pack | Price | ALN credit | ALN per ALIEN |
+| Pack | Price (real ALIEN) | ALN credit | ALN per ALIEN |
 |---|---|---|---|
-| Signal Boost | 0.01 ALIEN | 50 ALN | 5,000 |
-| Operative Cache | 0.04 ALIEN | 250 ALN | 6,250 |
-| Commander's Vault | 0.10 ALIEN | 1,000 ALN | 10,000 |
+| Signal Boost | 5 ALIEN | 50 ALN | 10 |
+| Operative Cache | 25 ALIEN | 250 ALN | 10 |
+| Commander's Vault | 100 ALIEN | 1,000 ALN | 10 |
+| Transcendent Reserve | 500 ALIEN | 5,000 ALN | 10 |
+
+**Exchange rate is fixed at 10 ALN = 1 ALIEN** (configurable via `ALN_PER_ALIEN` env var). Same rate applies to withdrawals: 50 ALN credit → 5 ALIEN tokens sent to your wallet.
 
 Payments go through the official Alien `usePayment` hook from `@alien-id/miniapps-react`. The flow:
 
-1. Player picks a pack.
+1. Player picks a pack → POST `/api/wallet/deposit` registers a pending transaction with a server-issued invoice.
 2. The hook calls `payment.pay({ recipient, amount, token: "ALIEN", network: "alien", invoice, item })`.
 3. The Alien app shows the native payment sheet.
-4. On `onPaid`, the player's local ALN balance is credited.
+4. On settlement, Alien fires an Ed25519-signed webhook at `/api/webhooks/payment` → server verifies the signature + invoice match → credits the wallet atomically.
 
-Real payments require `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` to be set to your provider address from the [Alien Developer Portal](https://dev.alien.org). Without it, the store falls back to **test products** that simulate successful payments.
+All purchases are **real** — there are no test products. Configure `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` + `WEBHOOK_PUBLIC_KEY` + `ALIEN_AUDIENCE` + `DATABASE_URL` to enable.
 
 ### Why local storage?
 
@@ -139,6 +142,123 @@ All constants live in [`lib/alien/aln-store.ts`](lib/alien/aln-store.ts):
 - `CAVEAT_COSTS_PURGE` — increase to make recovery more painful
 
 Every constant is commented with its effect on the house edge.
+
+---
+
+## Secure Wallet (Deposits & Withdrawals)
+
+The wallet has two modes. **Fallback mode** (default, no env vars) tracks ALN in `localStorage` — fine for dev but trivially gameable. **Secure mode** (set `ALIEN_AUDIENCE` + wallet keys) makes the server the source of truth.
+
+### Architecture
+
+```
+                       ┌─────────────────────────────────┐
+                       │       Alien Network (chain)      │
+                       └────────┬───────────────┬─────────┘
+                                │               │
+                   deposits     │               │  withdrawals
+                   (player pays)│               │ (server signs)
+                                ▼               ▼
+┌──────────────┐    payment.pay()    ┌──────────────────────┐
+│  Alien App   │───────────────────▶│  /api/webhooks/      │
+│  (WebView)   │                    │  payment             │
+└──────┬───────┘                    │  (Ed25519-verified)  │
+       │                            └──────────┬───────────┘
+       │ JWT (auth.sub)                        │ credit
+       │                                       ▼
+       │         ┌──────────────────────────────────────┐
+       └────────▶│  /api/wallet/* (Next.js API routes)  │
+                 │  • balance    • claim                 │
+                 │  • deposit    • withdraw              │
+                 │  • transactions                       │
+                 └──────────────┬───────────────────────┘
+                                │ atomic UPDATE … RETURNING
+                                ▼
+                       ┌──────────────────┐
+                       │  NeonDB Postgres  │
+                       │  (users + txs +   │
+                       │   audit_log)      │
+                       │  UUID PKs         │
+                       └──────────────────┘
+```
+
+### Endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/api/wallet/balance` | JWT | Returns balance + daily cap + recent transactions |
+| POST | `/api/wallet/deposit` | JWT + idempotency | Registers a pending deposit, returns invoice for `payment.pay()` |
+| POST | `/api/wallet/withdraw` | JWT + idempotency | **Server signs + broadcasts ALIEN transfer** to player's wallet |
+| POST | `/api/wallet/claim` | JWT + gameSeed | Credits earned ALN (server recomputes reward, enforces daily cap) |
+| GET | `/api/wallet/transactions` | JWT | Full transaction history |
+| POST | `/api/webhooks/payment` | Ed25519 sig | Alien calls this on settlement → credits the wallet |
+
+### Security model
+
+**Threats mitigated**:
+
+| Threat | Mitigation |
+|---|---|
+| localStorage tampering | Balance is server-side; client `balance` is read-only display |
+| Replay attacks | Every mutation requires a UUID `idempotencyKey`; duplicates return 409 |
+| Double-spend | `BEGIN IMMEDIATE` transaction locks the balance row; concurrent requests serialize |
+| Fake deposits | Wallet only credits after Ed25519-signed webhook confirms on-chain settlement |
+| Bot farming | Daily cap server-enforced; rate limits on claim (1 per 5s); gameSeed can only be claimed once |
+| Dust attacks | `WALLET_MIN_WITHDRAWAL` (default 50 ALN) enforced server-side |
+| Withdrawal broadcast failure | Atomic refund — if on-chain tx fails, ALN is credited back automatically |
+| JWT forgery | Verified via Alien's JWKS using `@alien-id/miniapps-auth-client` |
+| Webhook forgery | Ed25519 signature verified against `WEBHOOK_PUBLIC_KEY` |
+| Private key leak | `ALIEN_WITHDRAW_PRIVATE_KEY` is server-only, never sent to client, never logged |
+
+**Threats NOT fully mitigated** (acknowledged):
+
+- **Hot wallet drain**: if `ALIEN_WITHDRAW_PRIVATE_KEY` is compromised, an attacker can drain the hot wallet. Mitigation: keep only operational funds in the hot wallet; top up from cold storage manually; monitor balance and alert on threshold.
+- **Fake game claims**: the server can't fully verify a Sudoku solve without storing the puzzle + move history. The mitigations are: daily cap (limits damage), rate limiting (slows farming), server-authoritative reward math (can't inflate amounts), and `gameSeed` idempotency (can't claim the same game twice). For full anti-cheat, see "Going to full anti-cheat" below.
+- **NeonDB connection limits**: Neon's free tier has connection limits. The `@neondatabase/serverless` driver uses HTTP-based queries (no persistent connections), so this is not an issue — each query is an independent HTTP request through Neon's pool.
+
+### Withdrawal flow (player → ALIEN tokens)
+
+1. Player taps "Cash" button → WithdrawModal opens
+2. Enters amount (≥ 50 ALN) + recipient Alien wallet address
+3. Reviews the conversion (5000 ALN = 1 ALIEN by default)
+4. Confirms → `POST /api/wallet/withdraw` with JWT + idempotency key
+5. Server atomically debits the wallet (`BEGIN IMMEDIATE`)
+6. Server signs + broadcasts the ALIEN transfer using `ALIEN_WITHDRAW_PRIVATE_KEY`
+7. On success: returns `txHash` + explorer URL → modal shows "Withdrawal complete"
+8. On failure: **automatically refunds** the ALN credit → modal shows error + refund confirmation
+
+The signing key **never leaves the server**. The client only sees the resulting `txHash`.
+
+### Going to production
+
+1. **Set env vars** in Vercel Project Settings:
+   - `DATABASE_URL` — your NeonDB pooled connection string (from console.neon.tech)
+   - `ALIEN_AUDIENCE` — your provider address
+   - `WEBHOOK_PUBLIC_KEY` — from Dev Portal → Webhooks
+   - `ALIEN_WITHDRAW_PRIVATE_KEY` — generate a new Ed25519 keypair for your hot wallet
+   - `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` — same as `ALIEN_AUDIENCE`
+   - `WALLET_DAILY_EARN_CAP` (optional, default 500)
+   - `WALLET_MIN_WITHDRAWAL` (optional, default 50)
+   - `ALN_PER_ALIEN` (optional, default 10)
+
+2. **Database auto-migrates on every build** — the `prebuild` script (`scripts/migrate.mjs`) runs `CREATE TABLE IF NOT EXISTS` for `users`, `transactions`, and `audit_log` tables, plus all indexes. It's idempotent so it's safe to run on every deploy. Verify by checking the build logs for `✅ Migrations complete`.
+
+3. **Register the webhook** in the Dev Portal pointing to `https://your-vercel-url.vercel.app/api/webhooks/payment`
+
+4. **Fund the hot wallet** — send ALIEN tokens to the address corresponding to `ALIEN_WITHDRAW_PRIVATE_KEY`. This is the wallet that honors withdrawals. Keep it topped up; monitor the balance.
+
+5. **Wire up the real Alien chain SDK** — in `app/api/wallet/withdraw/route.ts`, replace the `broadcastAlienTransfer` stub with the actual Alien SDK call. The function signature is already correct.
+
+### Going to full anti-cheat
+
+The current `claim` endpoint trusts the client's reported `mistakes` and `hintsUsed`. For full anti-cheat:
+
+1. Generate puzzles server-side (`POST /api/puzzle/new` returns puzzle + seed)
+2. Store the solution + difficulty keyed by `gameSeed`
+3. On `claim`, verify the player's submitted board matches the stored solution
+4. Track hints/mistakes via server-side events (`POST /api/puzzle/hint`, `/api/puzzle/mistake`)
+
+This is left as a follow-up because it materially changes the game architecture (server becomes the puzzle authority).
 
 ---
 

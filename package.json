@@ -4,16 +4,21 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/migrate.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
+    "@alien-id/miniapps-auth-client": "^2.1.1",
     "@alien-id/miniapps-bridge": "^2.1.1",
     "@alien-id/miniapps-react": "^2.1.1",
+    "@neondatabase/serverless": "^1.0.1",
     "next": "16.2.2",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",
