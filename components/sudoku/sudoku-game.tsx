@@ -15,6 +15,13 @@ import {
   DIFFICULTY_META,
 } from "@/lib/sudoku/types";
 import { findConflicts, generatePuzzle, isSolved } from "@/lib/sudoku/generator";
+import {
+  SOLVE_REWARD,
+  formatAlnCredit,
+} from "@/lib/alien/aln-store";
+import { useAln } from "@/lib/alien/use-aln";
+import { AlnStoreModal } from "@/components/alien/aln-store-modal";
+import { CaveatModal } from "@/components/alien/caveat-modal";
 import { Board, type CellRenderMeta } from "./board";
 import { NumberPad } from "./number-pad";
 import { Controls } from "./controls";
@@ -89,7 +96,9 @@ type Action =
   | { type: "undo" }
   | { type: "hint"; index: number; value: number }
   | { type: "new_game"; puzzle: Puzzle }
-  | { type: "set_difficulty"; difficulty: Difficulty };
+  | { type: "set_difficulty"; difficulty: Difficulty }
+  | { type: "purge_errors" }
+  | { type: "refill_hints" };
 
 function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
@@ -220,6 +229,23 @@ function reducer(state: GameState, action: Action): GameState {
     case "set_difficulty":
       return { ...state, difficulty: action.difficulty };
 
+    case "purge_errors": {
+      // Caveat: reset mistake counter to 0 and revive a lost game.
+      // Does NOT touch the board state — only the budget.
+      if (state.mistakes === 0 && state.status === "playing") return state;
+      return {
+        ...state,
+        mistakes: 0,
+        status: "playing",
+      };
+    }
+
+    case "refill_hints": {
+      // Caveat: restore hints to the tier maximum.
+      if (state.hintsLeft >= state.maxHints) return state;
+      return { ...state, hintsLeft: state.maxHints };
+    }
+
     case "new_game": {
       const cells = buildFromPuzzle(action.puzzle);
       return {
@@ -278,8 +304,12 @@ export function SudokuGame() {
   );
   const [elapsed, setElapsed] = useState(0);
   const [generating, setGenerating] = useState(true); // start in "generating" until first puzzle is built
+  const [storeOpen, setStoreOpen] = useState(false);
+  const [caveatOpen, setCaveatOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(false);
+  const aln = useAln();
+  const prevStatusRef = useRef<typeof state.status>("playing");
 
   // Generate the first puzzle on mount (client-only).
   useEffect(() => {
@@ -289,6 +319,18 @@ export function SudokuGame() {
     dispatch({ type: "new_game", puzzle });
     setGenerating(false);
   }, []);
+
+  // ---------- award ALN when the puzzle is solved ----------
+  useEffect(() => {
+    if (
+      prevStatusRef.current === "playing" &&
+      state.status === "won"
+    ) {
+      const reward = SOLVE_REWARD[state.difficulty] ?? 5;
+      aln.earn(reward, `Solved ${DIFFICULTY_META[state.difficulty].label} puzzle`);
+    }
+    prevStatusRef.current = state.status;
+  }, [state.status, state.difficulty, aln]);
 
   // ---------- apply active tier's accent color to <html> CSS vars ----------
   useEffect(() => {
@@ -349,6 +391,15 @@ export function SudokuGame() {
     [],
   );
   const handleUndo = useCallback(() => dispatch({ type: "undo" }), []);
+
+  // ---------- caveat handlers (called by CaveatModal after ALN spend) ----------
+  const handlePurgeErrors = useCallback(() => {
+    dispatch({ type: "purge_errors" });
+    setCaveatOpen(false);
+  }, []);
+  const handleRefillHints = useCallback(() => {
+    dispatch({ type: "refill_hints" });
+  }, []);
 
   const handleHint = useCallback(() => {
     if (state.hintsLeft <= 0) return;
@@ -438,6 +489,62 @@ export function SudokuGame() {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* ALN balance bar — always visible */}
+      <div
+        className="flex items-center justify-between rounded-md border px-3 py-2"
+        style={{
+          borderColor: "rgba(192,132,252,0.35)",
+          background:
+            "linear-gradient(90deg, rgba(192,132,252,0.12), transparent 70%)",
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <div
+            className="flex h-7 w-7 items-center justify-center rounded-full border"
+            style={{
+              borderColor: "rgba(192,132,252,0.5)",
+              color: "#c084fc",
+              boxShadow: "0 0 8px rgba(192,132,252,0.3)",
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2 2 7l10 5 10-5-10-5Z" />
+              <path d="m2 17 10 5 10-5" />
+              <path d="m2 12 10 5 10-5" />
+            </svg>
+          </div>
+          <div className="flex flex-col leading-tight">
+            <span className="font-mono text-[9px] uppercase tracking-[0.25em] text-[var(--foreground-dim)]">
+              ALN Balance
+            </span>
+            <span
+              className="font-mono text-sm font-semibold"
+              style={{ color: "#c084fc", textShadow: "0 0 8px rgba(192,132,252,0.4)" }}
+            >
+              {aln.hydrated ? formatAlnCredit(aln.balance) : "—"}
+            </span>
+          </div>
+        </div>
+        <div className="flex gap-1.5">
+          <button
+            type="button"
+            onClick={() => setCaveatOpen(true)}
+            className="rounded-md border border-[rgba(251,191,36,0.4)] bg-[rgba(251,191,36,0.08)] px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#fbbf24] transition-all hover:bg-[rgba(251,191,36,0.16)]"
+            aria-label="Open caveats"
+          >
+            Caveats
+          </button>
+          <button
+            type="button"
+            onClick={() => setStoreOpen(true)}
+            className="rounded-md border border-[rgba(192,132,252,0.5)] bg-[rgba(192,132,252,0.12)] px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#c084fc] transition-all hover:bg-[rgba(192,132,252,0.22)]"
+            aria-label="Open ALN store"
+          >
+            + Buy ALN
+          </button>
+        </div>
+      </div>
+
       <Controls
         difficulty={state.difficulty}
         onDifficultyChange={handleDifficultyChange}
@@ -535,19 +642,40 @@ export function SudokuGame() {
                     : "Re-calibrate and try again."}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={handleNewGame}
-                className="mt-2 rounded-md border px-5 py-2 font-mono text-xs font-medium uppercase tracking-wider transition-all"
-                style={{
-                  borderColor: "var(--accent)",
-                  background: "var(--accent)",
-                  color: "#050813",
-                  boxShadow: "0 0 16px var(--accent-soft)",
-                }}
-              >
-                New Mission
-              </button>
+              <div className="mt-2 flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleNewGame}
+                  className="rounded-md border px-5 py-2 font-mono text-xs font-medium uppercase tracking-wider transition-all"
+                  style={{
+                    borderColor: "var(--accent)",
+                    background: "var(--accent)",
+                    color: "#050813",
+                    boxShadow: "0 0 16px var(--accent-soft)",
+                  }}
+                >
+                  New Mission
+                </button>
+
+                {state.status === "lost" && (
+                  <button
+                    type="button"
+                    onClick={() => setCaveatOpen(true)}
+                    disabled={aln.balance < 15}
+                    className="rounded-md border border-[rgba(251,191,36,0.5)] bg-[rgba(251,191,36,0.1)] px-4 py-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#fbbf24] transition-all hover:bg-[rgba(251,191,36,0.2)] disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{
+                      boxShadow:
+                        aln.balance >= 15
+                          ? "0 0 10px rgba(251,191,36,0.3)"
+                          : "none",
+                    }}
+                  >
+                    {aln.balance >= 15
+                      ? "Purge errors · 15 ALN"
+                      : "Need 15 ALN to purge errors"}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -561,6 +689,19 @@ export function SudokuGame() {
         onToggleNotes={handleToggleNotes}
         onUndo={handleUndo}
         canUndo={state.history.length > 0}
+      />
+
+      {/* ALN Store + Caveats modals */}
+      <AlnStoreModal open={storeOpen} onClose={() => setStoreOpen(false)} />
+      <CaveatModal
+        open={caveatOpen}
+        onClose={() => setCaveatOpen(false)}
+        currentMistakes={state.mistakes}
+        maxMistakes={state.maxMistakes}
+        currentHints={state.hintsLeft}
+        maxHints={state.maxHints}
+        onPurgeErrors={handlePurgeErrors}
+        onRefillHints={handleRefillHints}
       />
     </div>
   );

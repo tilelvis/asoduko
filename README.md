@@ -9,7 +9,7 @@ Built on top of the [Alien Mini App boilerplate](https://docs.alien.org/quicksta
 - **Tailwind CSS 4** with Alien safe-area insets
 - **`@alien-id/miniapps-react`** (`AlienProvider`) for the host bridge
 
-No database, no auth, no payments — just a self-contained Sudoku game that runs in the Alien WebView.
+No database, no auth, no webhook server — just a self-contained Sudoku game with an integrated ALN token economy that runs in the Alien WebView. Real ALIEN token purchases go through the official Alien payment bridge to your provider address; the spendable ALN balance is tracked client-side in `localStorage`.
 
 ---
 
@@ -27,6 +27,59 @@ Six progressive ranks. Each tier drops more clues and tightens the mistake / hin
 | Transcendent | 22 | 3 | 1 | violet | Beyond computation |
 
 The active tier's accent color is applied to the entire UI in real time via CSS custom properties (`--accent`, `--accent-soft`, `--accent-faint`).
+
+---
+
+## ALN Token Economy
+
+Players earn and spend **ALN** (Alien tokens) to recover from tough puzzles.
+
+### Earning ALN
+
+Solve a puzzle to earn ALN, scaled by tier:
+
+| Tier | Reward |
+|---|---|
+| Rookie | 5 ALN |
+| Cadet | 10 ALN |
+| Operative | 18 ALN |
+| Commander | 30 ALN |
+| Architect | 50 ALN |
+| Transcendent | 80 ALN |
+
+New players start with **50 ALN**.
+
+### Spending ALN — Caveats
+
+Open the **Caveats** modal from the top-of-screen balance bar (or from the "Grid overloaded" lost-screen) to spend ALN on recoveries:
+
+| Caveat | Cost | Effect |
+|---|---|---|
+| **Purge Errors** | 15 ALN | Reset mistake counter to 0 and revive a lost game |
+| **Refill Hints** | 10 ALN | Restore hints to the tier's maximum |
+
+### Buying ALN with real ALIEN tokens
+
+Open the **ALN Store** modal (top-right "+ Buy ALN" button) to purchase ALN credit with real **ALIEN** tokens via the Alien payment bridge. Three packs are available:
+
+| Pack | Price | ALN credit |
+|---|---|---|
+| Signal Boost | 0.01 ALIEN | 50 ALN |
+| Operative Cache | 0.04 ALIEN | 250 ALN |
+| Commander's Vault | 0.10 ALIEN | 1,000 ALN |
+
+Payments are made through the official Alien `usePayment` hook from `@alien-id/miniapps-react`. The flow:
+
+1. Player picks a pack.
+2. The hook calls `payment.pay({ recipient, amount, token: "ALIEN", network: "alien", invoice, item })`.
+3. The Alien app shows the native payment sheet.
+4. On `onPaid`, the player's local ALN balance is credited.
+
+Real payments require `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` to be set to your provider address from the [Alien Developer Portal](https://dev.alien.org). Without it, the store automatically falls back to **test products** that simulate successful payments — perfect for local development.
+
+### Why local storage?
+
+A full backend ledger (like the official Alien boilerplate's Postgres + webhook stack) is overkill for a Sudoku game. The ALN balance is tracked client-side in `localStorage`, namespaced under `alien-sudoku:aln`. The actual on-chain payment is still 100% real and goes to your provider address — we just credit the resulting spendable balance locally.
 
 ---
 
