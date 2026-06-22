@@ -1,6 +1,6 @@
 # Alien Sudoku — Mini App
 
-A clean, mobile-first Sudoku puzzle built as an [Alien](https://alien.org) Mini App. Deploy on Vercel and launch it inside the Alien app via your mini-app deeplink.
+A clean, mobile-first Sudoku puzzle built as an [Alien](https://alien.org) Mini App, themed as a holographic alien control console. Deploy on Vercel and launch it inside the Alien app via your mini-app deeplink.
 
 Built on top of the [Alien Mini App boilerplate](https://docs.alien.org/quickstart/install-boilerplate) conventions:
 
@@ -10,6 +10,35 @@ Built on top of the [Alien Mini App boilerplate](https://docs.alien.org/quicksta
 - **`@alien-id/miniapps-react`** (`AlienProvider`) for the host bridge
 
 No database, no auth, no payments — just a self-contained Sudoku game that runs in the Alien WebView.
+
+---
+
+## Difficulty Tiers
+
+Six progressive ranks. Each tier drops more clues and tightens the mistake / hint budgets.
+
+| Tier | Clues | Mistakes | Hints | Accent | Tagline |
+|---|---|---|---|---|---|
+| Rookie | 50 | 7 | 5 | cyan | First contact |
+| Cadet | 42 | 6 | 4 | emerald | Orbital training |
+| Operative | 36 | 5 | 3 | lime | Field deployment |
+| Commander | 30 | 4 | 2 | amber | Sector authority |
+| Architect | 26 | 3 | 2 | rose | Mind of the hive |
+| Transcendent | 22 | 3 | 1 | violet | Beyond computation |
+
+The active tier's accent color is applied to the entire UI in real time via CSS custom properties (`--accent`, `--accent-soft`, `--accent-faint`).
+
+---
+
+## Visual Theme
+
+- **Deep-space void background** with a subtle starfield (radial-gradient dots).
+- **Neon accent glow** on the active cell, given digits, selected tier, and primary buttons.
+- **Holographic scanlines** overlay on the board (CRT-style).
+- **Glassy stat panels** with backdrop blur.
+- **Per-tier accent palette** that re-themes the whole UI when you switch ranks.
+- **Monospace typography** (Geist Mono) for all numbers, labels, and tier names.
+- **Light mode** gracefully degrades to a bright "daylight observation deck" palette while preserving the neon accents.
 
 ---
 

@@ -1,12 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import type { Board as BoardArray, Difficulty, Puzzle } from "@/lib/sudoku/types";
 import {
-  findConflicts,
-  generatePuzzle,
-  isSolved,
-} from "@/lib/sudoku/generator";
+  DIFFICULTY_MAX_HINTS,
+  DIFFICULTY_MAX_MISTAKES,
+  DIFFICULTY_META,
+} from "@/lib/sudoku/types";
+import { findConflicts, generatePuzzle, isSolved } from "@/lib/sudoku/generator";
 import { Board, type CellRenderMeta } from "./board";
 import { NumberPad } from "./number-pad";
 import { Controls } from "./controls";
@@ -19,17 +27,19 @@ interface CellState {
   value: number;
   given: boolean;
   notes: Set<number>;
-  hint: boolean; // revealed by a hint
+  hint: boolean;
 }
 
 interface GameState {
-  cells: CellState[]; // length 81
+  cells: CellState[];
   solution: BoardArray;
   difficulty: Difficulty;
   selectedIndex: number;
   notesMode: boolean;
   mistakes: number;
+  maxMistakes: number; // per-tier budget, snapshotted at game start
   hintsLeft: number;
+  maxHints: number; // per-tier budget, snapshotted at game start
   history: HistoryEntry[];
   status: "playing" | "won" | "lost";
 }
@@ -41,19 +51,7 @@ interface HistoryEntry {
   prevMistakes: number;
 }
 
-const MAX_MISTAKES = 5;
-const MAX_HINTS = 3;
-
 // ---------- helpers ----------
-
-function emptyCellStates(): CellState[] {
-  return Array.from({ length: 81 }, () => ({
-    value: 0,
-    given: false,
-    notes: new Set<number>(),
-    hint: false,
-  }));
-}
 
 function buildFromPuzzle(p: Puzzle): CellState[] {
   return p.puzzle.map((v) => ({
@@ -78,7 +76,6 @@ function countDigits(cells: CellState[]): number[] {
   for (const c of cells) {
     if (c.value > 0) counts[c.value]++;
   }
-  // remaining = 9 - already-placed
   return counts.map((n) => 9 - n);
 }
 
@@ -118,7 +115,6 @@ function reducer(state: GameState, action: Action): GameState {
       });
 
       if (state.notesMode && cells[idx].value === 0) {
-        // Toggle the digit in the notes set.
         const notes = new Set(cells[idx].notes);
         if (notes.has(action.value)) notes.delete(action.value);
         else notes.add(action.value);
@@ -126,21 +122,18 @@ function reducer(state: GameState, action: Action): GameState {
         return { ...state, cells, history };
       }
 
-      // Normal placement.
       cells[idx].notes = new Set();
       cells[idx].value = action.value;
       cells[idx].hint = false;
 
-      // Mistake tracking.
       let mistakes = state.mistakes;
       if (action.value !== state.solution[idx]) {
         mistakes = state.mistakes + 1;
       }
 
-      // Win check.
       const boardNow: BoardArray = cells.map((c) => c.value);
       const won = isSolved(boardNow, state.solution);
-      const lost = mistakes >= MAX_MISTAKES && !won;
+      const lost = mistakes >= state.maxMistakes && !won;
 
       return {
         ...state,
@@ -173,9 +166,8 @@ function reducer(state: GameState, action: Action): GameState {
       return { ...state, cells, history };
     }
 
-    case "toggle_notes": {
+    case "toggle_notes":
       return { ...state, notesMode: !state.notesMode };
-    }
 
     case "undo": {
       if (state.history.length === 0) return state;
@@ -189,7 +181,7 @@ function reducer(state: GameState, action: Action): GameState {
         cells,
         history: state.history.slice(0, -1),
         mistakes: last.prevMistakes,
-        status: "playing", // undoing can never end the game
+        status: "playing",
         selectedIndex: last.index,
       };
     }
@@ -225,10 +217,8 @@ function reducer(state: GameState, action: Action): GameState {
       };
     }
 
-    case "set_difficulty": {
-      // Don't reset immediately — the component triggers a new game.
+    case "set_difficulty":
       return { ...state, difficulty: action.difficulty };
-    }
 
     case "new_game": {
       const cells = buildFromPuzzle(action.puzzle);
@@ -239,7 +229,9 @@ function reducer(state: GameState, action: Action): GameState {
         selectedIndex: -1,
         notesMode: false,
         mistakes: 0,
-        hintsLeft: MAX_HINTS,
+        maxMistakes: DIFFICULTY_MAX_MISTAKES[action.puzzle.difficulty],
+        hintsLeft: DIFFICULTY_MAX_HINTS[action.puzzle.difficulty],
+        maxHints: DIFFICULTY_MAX_HINTS[action.puzzle.difficulty],
         history: [],
         status: "playing",
       };
@@ -252,31 +244,61 @@ function reducer(state: GameState, action: Action): GameState {
 
 // ---------- component ----------
 
-function createInitialState(difficulty: Difficulty): GameState {
-  const puzzle = generatePuzzle(difficulty);
+/**
+ * Build an empty initial state — puzzle is generated client-side after mount
+ * to avoid SSR hydration mismatch (Math.random differs between server and
+ * client).
+ */
+function createEmptyInitialState(difficulty: Difficulty): GameState {
   return {
-    cells: buildFromPuzzle(puzzle),
-    solution: puzzle.solution,
+    cells: Array.from({ length: 81 }, () => ({
+      value: 0,
+      given: false,
+      notes: new Set<number>(),
+      hint: false,
+    })),
+    solution: new Array(81).fill(0),
     difficulty,
     selectedIndex: -1,
     notesMode: false,
     mistakes: 0,
-    hintsLeft: MAX_HINTS,
+    maxMistakes: DIFFICULTY_MAX_MISTAKES[difficulty],
+    hintsLeft: DIFFICULTY_MAX_HINTS[difficulty],
+    maxHints: DIFFICULTY_MAX_HINTS[difficulty],
     history: [],
     status: "playing",
   };
 }
 
 export function SudokuGame() {
-  // Lazily create the initial puzzle on first render.
   const [state, dispatch] = useReducer(
     reducer,
-    "easy" as Difficulty,
-    createInitialState,
+    "rookie" as Difficulty,
+    createEmptyInitialState,
   );
   const [elapsed, setElapsed] = useState(0);
-  const [generating, setGenerating] = useState(false);
+  const [generating, setGenerating] = useState(true); // start in "generating" until first puzzle is built
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mountedRef = useRef(false);
+
+  // Generate the first puzzle on mount (client-only).
+  useEffect(() => {
+    if (mountedRef.current) return;
+    mountedRef.current = true;
+    const puzzle = generatePuzzle("rookie");
+    dispatch({ type: "new_game", puzzle });
+    setGenerating(false);
+  }, []);
+
+  // ---------- apply active tier's accent color to <html> CSS vars ----------
+  useEffect(() => {
+    const meta = DIFFICULTY_META[state.difficulty];
+    const root = document.documentElement;
+    root.style.setProperty("--accent", meta.accent);
+    root.style.setProperty("--accent-2", meta.accent2);
+    root.style.setProperty("--accent-soft", hexToRgba(meta.accent, 0.5));
+    root.style.setProperty("--accent-faint", hexToRgba(meta.accent, 0.15));
+  }, [state.difficulty]);
 
   // ---------- timer ----------
   useEffect(() => {
@@ -290,20 +312,15 @@ export function SudokuGame() {
   }, [state.status, generating]);
 
   // ---------- new game ----------
-  const startNewGame = useCallback(
-    (difficulty: Difficulty) => {
-      setGenerating(true);
-      setElapsed(0);
-      // Generation can take ~50-300ms — defer to the next tick so the UI
-      // can show a loading state without blocking the main thread.
-      setTimeout(() => {
-        const puzzle = generatePuzzle(difficulty);
-        dispatch({ type: "new_game", puzzle });
-        setGenerating(false);
-      }, 10);
-    },
-    [],
-  );
+  const startNewGame = useCallback((difficulty: Difficulty) => {
+    setGenerating(true);
+    setElapsed(0);
+    setTimeout(() => {
+      const puzzle = generatePuzzle(difficulty);
+      dispatch({ type: "new_game", puzzle });
+      setGenerating(false);
+    }, 10);
+  }, []);
 
   const handleNewGame = useCallback(() => {
     startNewGame(state.difficulty);
@@ -335,18 +352,12 @@ export function SudokuGame() {
 
   const handleHint = useCallback(() => {
     if (state.hintsLeft <= 0) return;
-    // Prefer the currently selected cell if it's empty or wrong; otherwise
-    // find the first empty cell.
     let target = state.selectedIndex;
     if (
       target < 0 ||
       state.cells[target].given ||
       state.cells[target].value === state.solution[target]
     ) {
-      target = state.cells.findIndex(
-        (c) => !c.given && c.value !== state.solution[c.value !== 0 ? 0 : 0],
-      );
-      // simpler: first empty non-given cell
       target = state.cells.findIndex(
         (c, i) => !c.given && c.value !== state.solution[i],
       );
@@ -368,7 +379,12 @@ export function SudokuGame() {
       } else if (e.key === "z" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         dispatch({ type: "undo" });
-      } else if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      } else if (
+        e.key === "ArrowUp" ||
+        e.key === "ArrowDown" ||
+        e.key === "ArrowLeft" ||
+        e.key === "ArrowRight"
+      ) {
         e.preventDefault();
         const cur = state.selectedIndex < 0 ? 0 : state.selectedIndex;
         const row = Math.floor(cur / 9);
@@ -398,12 +414,11 @@ export function SudokuGame() {
         sel >= 0 &&
         !selected &&
         (Math.floor(idx / 9) === Math.floor(sel / 9) ||
-          (idx % 9) === (sel % 9) ||
+          idx % 9 === sel % 9 ||
           (Math.floor(idx / 27) === Math.floor(sel / 27) &&
             Math.floor((idx % 9) / 3) === Math.floor((sel % 9) / 3)));
       const sameValue = !selected && selValue > 0 && cell.value === selValue;
-      const conflict =
-        cell.value !== 0 && findConflicts(board, idx).length > 0;
+      const conflict = cell.value !== 0 && findConflicts(board, idx).length > 0;
       return {
         value: cell.value,
         notes: Array.from(cell.notes).sort((a, b) => a - b),
@@ -419,7 +434,6 @@ export function SudokuGame() {
 
   const digitCounts = useMemo(() => countDigits(state.cells), [state.cells]);
 
-  // ---------- win/lose banner ----------
   const showOverlay = state.status === "won" || state.status === "lost";
 
   return (
@@ -430,7 +444,7 @@ export function SudokuGame() {
         onNewGame={handleNewGame}
         elapsedSeconds={elapsed}
         mistakes={state.mistakes}
-        maxMistakes={MAX_MISTAKES}
+        maxMistakes={state.maxMistakes}
         onHint={handleHint}
         hintsLeft={state.hintsLeft}
       />
@@ -439,54 +453,100 @@ export function SudokuGame() {
         <Board cells={renderCells} onCellClick={handleCellClick} />
 
         {generating && (
-          <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-white/70 backdrop-blur-sm dark:bg-zinc-950/70">
-            <div className="flex flex-col items-center gap-2">
-              <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600 dark:border-indigo-900 dark:border-t-indigo-300" />
-              <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                Generating puzzle…
+          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-[rgba(5,8,19,0.85)] backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-3">
+              <div className="orbit-spin h-8 w-8 rounded-full border-2 border-[var(--grid-line)] border-t-[var(--accent)]" />
+              <p
+                className="font-mono text-xs uppercase tracking-[0.3em]"
+                style={{ color: "var(--accent)" }}
+              >
+                Calibrating grid…
               </p>
             </div>
           </div>
         )}
 
         {showOverlay && !generating && (
-          <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-white/85 backdrop-blur-sm dark:bg-zinc-950/85">
+          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-[rgba(5,8,19,0.9)] backdrop-blur-md">
             <div className="flex flex-col items-center gap-3 px-6 text-center">
               <div
-                className={[
-                  "flex h-14 w-14 items-center justify-center rounded-full",
-                  state.status === "won"
-                    ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400"
-                    : "bg-rose-100 text-rose-600 dark:bg-rose-950 dark:text-rose-400",
-                ].join(" ")}
+                className="flex h-16 w-16 items-center justify-center rounded-full border-2"
+                style={{
+                  borderColor:
+                    state.status === "won"
+                      ? "rgba(52,211,153,0.7)"
+                      : "rgba(251,113,133,0.7)",
+                  boxShadow:
+                    state.status === "won"
+                      ? "0 0 24px rgba(52,211,153,0.5)"
+                      : "0 0 24px rgba(251,113,133,0.5)",
+                  color:
+                    state.status === "won" ? "#34d399" : "#fb7185",
+                }}
               >
                 {state.status === "won" ? (
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <svg
+                    width="32"
+                    height="32"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
                     <path d="M20 6 9 17l-5-5" />
                   </svg>
                 ) : (
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <svg
+                    width="32"
+                    height="32"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
                     <path d="M18 6 6 18" />
                     <path d="m6 6 12 12" />
                   </svg>
                 )}
               </div>
               <div>
-                <p className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
-                  {state.status === "won" ? "You solved it!" : "Out of mistakes"}
-                </p>
-                <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
+                <p
+                  className="font-mono text-lg font-semibold uppercase tracking-wider"
+                  style={{
+                    color:
+                      state.status === "won" ? "#34d399" : "#fb7185",
+                    textShadow:
+                      state.status === "won"
+                        ? "0 0 12px rgba(52,211,153,0.6)"
+                        : "0 0 12px rgba(251,113,133,0.6)",
+                  }}
+                >
                   {state.status === "won"
-                    ? `Time: ${formatElapsed(elapsed)}`
-                    : "Better luck next round."}
+                    ? "Signal resolved"
+                    : "Grid overloaded"}
+                </p>
+                <p className="mt-1 font-mono text-xs uppercase tracking-[0.25em] text-[var(--foreground-muted)]">
+                  {state.status === "won"
+                    ? `Time: ${formatElapsed(elapsed)} · Rank: ${DIFFICULTY_META[state.difficulty].label}`
+                    : "Re-calibrate and try again."}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={handleNewGame}
-                className="mt-1 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 dark:bg-indigo-700 dark:hover:bg-indigo-600"
+                className="mt-2 rounded-md border px-5 py-2 font-mono text-xs font-medium uppercase tracking-wider transition-all"
+                style={{
+                  borderColor: "var(--accent)",
+                  background: "var(--accent)",
+                  color: "#050813",
+                  boxShadow: "0 0 16px var(--accent-soft)",
+                }}
               >
-                Play Again
+                New Mission
               </button>
             </div>
           </div>
@@ -512,4 +572,13 @@ function formatElapsed(total: number): string {
     .padStart(2, "0");
   const s = (total % 60).toString().padStart(2, "0");
   return `${m}:${s}`;
+}
+
+/** Convert "#22d3ee" + alpha → "rgba(34,211,238,alpha)". */
+function hexToRgba(hex: string, alpha: number): string {
+  const m = hex.replace("#", "");
+  const r = parseInt(m.substring(0, 2), 16);
+  const g = parseInt(m.substring(2, 4), 16);
+  const b = parseInt(m.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

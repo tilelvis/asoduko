@@ -1,8 +1,54 @@
 @import "tailwindcss";
 
+/* ===========================================================================
+   ALIEN SUDOKU — Futuristic Theme Tokens
+   A deep-space control-panel aesthetic: dark void background, neon cyan
+   grid lines, and per-difficulty accent colors that glow through box-shadow.
+   =========================================================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Base palette — dark space, but readable in light WebView too. */
+  --background: #050813; /* deep void */
+  --background-elevated: #0b1024; /* card surface */
+  --background-cell: #0a0f1f; /* empty cell */
+  --foreground: #e6f1ff;
+  --foreground-muted: #7a8bb3;
+  --foreground-dim: #4a5878;
+
+  /* Primary neon cyan — the "Alien" brand accent. */
+  --neon: #22d3ee;
+  --neon-soft: rgba(34, 211, 238, 0.5);
+  --neon-faint: rgba(34, 211, 238, 0.15);
+
+  /* Status colors. */
+  --signal-warn: #fbbf24;
+  --signal-error: #fb7185;
+  --signal-ok: #34d399;
+
+  /* Grid lines. */
+  --grid-line: rgba(122, 139, 179, 0.18);
+  --grid-line-strong: rgba(34, 211, 238, 0.55);
+
+  /* Default difficulty accent (overridden per-tier at runtime). */
+  --accent: var(--neon);
+  --accent-2: #0891b2;
+  --accent-soft: var(--neon-soft);
+  --accent-faint: var(--neon-faint);
+}
+
+/* Respect the user's light-mode preference by inverting to a bright
+   "daylight observation deck" palette. The neon glow remains. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --background: #eef2ff;
+    --background-elevated: #ffffff;
+    --background-cell: #f8fafc;
+    --foreground: #0b1024;
+    --foreground-muted: #475569;
+    --foreground-dim: #94a3b8;
+    --grid-line: rgba(15, 23, 42, 0.12);
+    --grid-line-strong: rgba(8, 145, 178, 0.6);
+  }
 }
 
 @theme inline {
@@ -11,35 +57,147 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 
-  /* Alien Mini App safe-area insets — exposed by the Alien bridge as
-     CSS custom properties on :root when running inside the Alien app. */
+  /* Alien Mini App safe-area insets. */
   --spacing-safe-top: var(--alien-safe-area-inset-top, 0px);
   --spacing-safe-bottom: var(--alien-safe-area-inset-bottom, 0px);
   --spacing-safe-left: var(--alien-safe-area-inset-left, 0px);
   --spacing-safe-right: var(--alien-safe-area-inset-right, 0px);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  /* Honour the Alien app's safe-area insets on every edge. */
   padding-top: var(--alien-safe-area-inset-top, env(safe-area-inset-top, 0px));
   padding-bottom: var(--alien-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
   padding-left: var(--alien-safe-area-inset-left, env(safe-area-inset-left, 0px));
   padding-right: var(--alien-safe-area-inset-right, env(safe-area-inset-right, 0px));
+
+  /* Subtle starfield — radial dots over the void. */
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgba(255, 255, 255, 0.5), transparent 50%),
+    radial-gradient(1px 1px at 75% 65%, rgba(255, 255, 255, 0.35), transparent 50%),
+    radial-gradient(1px 1px at 50% 80%, rgba(255, 255, 255, 0.4), transparent 50%),
+    radial-gradient(1px 1px at 90% 15%, rgba(255, 255, 255, 0.3), transparent 50%),
+    radial-gradient(1px 1px at 10% 70%, rgba(255, 255, 255, 0.4), transparent 50%),
+    radial-gradient(800px 600px at 50% -10%, rgba(34, 211, 238, 0.06), transparent 60%),
+    radial-gradient(600px 400px at 100% 100%, rgba(168, 85, 247, 0.05), transparent 60%);
+  background-attachment: fixed;
 }
 
-/* Prevent the long-press callout / text selection on game cells so the
-   WebView feels native. */
+@media (prefers-color-scheme: light) {
+  body {
+    background-image:
+      radial-gradient(800px 600px at 50% -10%, rgba(34, 211, 238, 0.12), transparent 60%),
+      radial-gradient(600px 400px at 100% 100%, rgba(168, 85, 247, 0.08), transparent 60%);
+  }
+}
+
+/* ===========================================================================
+   Reusable effect utilities
+   =========================================================================== */
+
+/* Neon text glow — used on selected digits, titles, accent text. */
+.neon-text {
+  text-shadow:
+    0 0 6px var(--accent-soft),
+    0 0 14px var(--accent-faint);
+}
+
+/* Neon border glow — used on the board frame and active buttons. */
+.neon-border {
+  box-shadow:
+    0 0 0 1px var(--accent-soft),
+    0 0 12px var(--accent-faint),
+    inset 0 0 12px var(--accent-faint);
+}
+
+/* Glassy elevated panel — used for stat cards. */
+.glass-panel {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.04),
+    rgba(255, 255, 255, 0.01)
+  );
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--grid-line);
+}
+
+@media (prefers-color-scheme: light) {
+  .glass-panel {
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.9),
+      rgba(255, 255, 255, 0.7)
+    );
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+  }
+}
+
+/* Animated scanline overlay for the board — adds a subtle "screen" feel. */
+.scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(255, 255, 255, 0.02) 0px,
+    rgba(255, 255, 255, 0.02) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  border-radius: inherit;
+  z-index: 1;
+}
+
+/* Pulse animation for the "active tier" pill. */
+@keyframes tier-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px var(--accent-soft),
+      0 0 8px var(--accent-faint);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px var(--accent-soft),
+      0 0 18px var(--accent-soft);
+  }
+}
+.tier-active {
+  animation: tier-pulse 2.4s ease-in-out infinite;
+}
+
+/* Spinner used by the "Generating puzzle…" overlay. */
+@keyframes orbit-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.orbit-spin {
+  animation: orbit-spin 0.9s linear infinite;
+}
+
+/* ===========================================================================
+   Mobile-native behaviour
+   =========================================================================== */
+
 button {
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
   user-select: none;
+}
+
+/* Thin, neon-style scrollbar inside the WebView. */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--accent-faint);
+  border-radius: 3px;
 }

@@ -20,24 +20,40 @@ interface BoardProps {
 }
 
 /**
- * 9x9 Sudoku grid. Renders the thick borders between 3x3 sub-grids using
- * a wrapper div with `gap` plus per-cell border classes. Memoised so it
- * only re-renders when the cell metadata array reference changes.
+ * 9x9 Sudoku grid styled as a holographic console panel.
+ *
+ * Layout strategy:
+ *  - Outer frame uses a dark elevated surface with a neon accent border.
+ *  - Cells are separated by thin grid lines via 1px gap.
+ *  - 3x3 sub-grids are visually separated by 2px gaps in the accent color.
+ *  - A subtle scanline overlay (`.scanlines::after`) sits on top of the
+ *    whole board to evoke a CRT/holographic display.
+ *
+ * Memoised — only re-renders when the cells array reference changes.
  */
 function BoardInner({ cells, onCellClick }: BoardProps) {
   return (
-    <div className="w-full overflow-hidden rounded-xl border border-zinc-300 bg-zinc-300 shadow-sm dark:border-zinc-700 dark:bg-zinc-700">
+    <div
+      className="scanlines relative w-full overflow-hidden rounded-lg p-[2px]"
+      style={{
+        background: "var(--background-elevated)",
+        boxShadow:
+          "0 0 0 1px var(--accent-soft), 0 0 22px var(--accent-faint), inset 0 0 22px rgba(0,0,0,0.6)",
+      }}
+    >
       <div
-        className="grid gap-px"
-        style={{ gridTemplateColumns: "repeat(9, minmax(0, 1fr))" }}
+        className="grid"
+        style={{
+          gridTemplateColumns: "repeat(9, minmax(0, 1fr))",
+          gap: "1px",
+          background: "var(--grid-line)",
+        }}
       >
         {cells.map((meta, idx) => {
           const row = Math.floor(idx / 9);
           const col = idx % 9;
 
-          // Add 2px outer gaps between 3x3 boxes by giving the cells on the
-          // box edge a thicker margin. We use margin instead of border so the
-          // inner cell stays square.
+          // Thicker accent-colored gap between 3x3 boxes.
           const boxLeft = col % 3 === 0 && col !== 0;
           const boxTop = row % 3 === 0 && row !== 0;
 
@@ -50,10 +66,7 @@ function BoardInner({ cells, onCellClick }: BoardProps) {
                 marginTop: boxTop ? 2 : 0,
               }}
             >
-              <Cell
-                {...meta}
-                onClick={() => onCellClick(idx)}
-              />
+              <Cell {...meta} onClick={() => onCellClick(idx)} />
             </div>
           );
         })}
