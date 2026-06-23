@@ -10,6 +10,7 @@ import {
   hasIdempotencyKey,
 } from "@/lib/db/wallet";
 import { getServerEnv, isWalletConfigured } from "@/lib/env";
+import { broadcastAlienTransfer, isChainConfigured } from "@/lib/alien/chain";
 
 /**
  * POST /api/wallet/withdraw
@@ -117,11 +118,11 @@ export const POST = withAuth(async (request, { auth }) => {
     );
   }
 
-  if (!env.ALIEN_WITHDRAW_PRIVATE_KEY) {
+  if (!isChainConfigured()) {
     return NextResponse.json(
       {
         error:
-          "Withdrawals disabled. Server missing ALIEN_WITHDRAW_PRIVATE_KEY.",
+          "Withdrawals disabled. Server missing ALIEN_WITHDRAW_PRIVATE_KEY, ALIEN_RPC_URL, or ALIEN_TOKEN_MINT.",
       },
       { status: 503 },
     );
@@ -199,42 +200,38 @@ export const POST = withAuth(async (request, { auth }) => {
   });
 
   try {
-    // ⚠ This is where you'd call the actual Alien network SDK to sign +
-    //   broadcast the transfer. The exact API depends on the Alien chain's
-    //   transaction format. We stub it here with a realistic interface.
-    //
-    //   In production, replace this with:
-    //     const txHash = await alienChain.transfer({
-    //       from: env.ALIEN_PROVIDER_ADDRESS,
-    //       to: recipientAddress,
-    //       amount: alienBaseUnits.toString(),
-    //       token: "ALIEN",
-    //       signingKey: env.ALIEN_WITHDRAW_PRIVATE_KEY,
-    //     });
-    const txHash = await broadcastAlienTransfer({
+    // Real on-chain transfer: sign with the hot wallet keypair + broadcast
+    // via the Alien RPC. The signing key never leaves the server process.
+    const chainResult = await broadcastAlienTransfer({
       recipientAddress,
       alienBaseUnits,
-      signingKey: env.ALIEN_WITHDRAW_PRIVATE_KEY!,
     });
 
-    await completeTransaction(txId, txHash);
+    await completeTransaction(txId, chainResult.txHash);
 
     await auditLog({
       alienId: auth.sub,
       action: "withdrawal_completed",
-      details: { amount, recipientAddress, invoice, txHash, alienBaseUnits },
+      details: {
+        amount,
+        recipientAddress,
+        invoice,
+        txHash: chainResult.txHash,
+        alienBaseUnits,
+        blockSlot: chainResult.blockSlot,
+      },
     });
 
     return NextResponse.json({
       txId,
       invoice,
-      txHash,
+      txHash: chainResult.txHash,
       amount,
       alienBaseUnits,
       recipientAddress,
       newBalance: debitResult.balance,
       status: "completed",
-      explorerUrl: `https://explorer.alien.org/tx/${txHash}`,
+      explorerUrl: chainResult.explorerUrl,
     });
   } catch (e) {
     // CRITICAL: refund the player if the on-chain broadcast failed.
@@ -282,38 +279,3 @@ export const POST = withAuth(async (request, { auth }) => {
     );
   }
 });
-
-/**
- * Stub for the actual Alien chain transfer. In production, replace this
- * with the real Alien SDK call. The signature shows what's needed.
- *
- * The signing key NEVER leaves this function — it goes straight to the
- * chain SDK, never to the client, never to a log.
- */
-async function broadcastAlienTransfer(opts: {
-  recipientAddress: string;
-  alienBaseUnits: number;
-  signingKey: string;
-}): Promise<string> {
-  // In production:
-  //   const { Keypair, Transaction } = await import("@alien-id/chain");
-  //   const kp = Keypair.fromSecretKey(opts.signingKey);
-  //   const tx = new Transaction().transfer({
-  //     to: opts.recipientAddress,
-  //     amount: opts.alienBaseUnits.toString(),
-  //     token: "ALIEN",
-  //   });
-  //   const signed = tx.sign([kp]);
-  //   const sig = await connection.sendRawTransaction(signed.serialize());
-  //   await connection.confirmTransaction(sig);
-  //   return sig;
-
-  // For dev/demo: simulate a 1s network round-trip + return a fake hash.
-  await new Promise((r) => setTimeout(r, 1000));
-  if (process.env.NODE_ENV !== "production") {
-    return `demo_${crypto.randomUUID()}`;
-  }
-  throw new Error(
-    "Alien chain SDK not wired up — see lib/api/broadcastAlienTransfer in withdraw/route.ts",
-  );
-}

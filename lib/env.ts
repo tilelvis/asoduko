@@ -31,6 +31,18 @@ const serverSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/, "ALIEN_WITHDRAW_PRIVATE_KEY must be 64 hex chars")
     .optional(),
 
+  // Alien chain RPC endpoint (Solana-compatible JSON-RPC)
+  ALIEN_RPC_URL: z.string().url().optional(),
+
+  // ALIEN SPL token mint address
+  ALIEN_TOKEN_MINT: z.string().min(32).optional(),
+
+  // ALIEN token decimals (default 9)
+  ALIEN_TOKEN_DECIMALS: z.coerce.number().int().positive().default(9),
+
+  // Explorer base URL for tx links
+  ALIEN_EXPLORER_URL: z.string().url().optional(),
+
   // Where deposits land (your provider address). Public, exposed to client.
   NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS: z.string().optional(),
 

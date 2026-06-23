@@ -104,6 +104,37 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_log(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)`,
   `CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log(created_at DESC)`,
+
+  // ---- leaderboard ----
+  // One row per (user, difficulty) — stores the player's BEST score for each
+  // tier. Score = points awarded for the solve (higher = better skill).
+  // Updated atomically via INSERT ... ON CONFLICT DO UPDATE WHERE new > old.
+  `CREATE TABLE IF NOT EXISTS leaderboard_entries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    alien_id TEXT NOT NULL,
+    difficulty TEXT NOT NULL CHECK (difficulty IN ('rookie','cadet','operative','commander','architect','transcendent')),
+    best_score INTEGER NOT NULL DEFAULT 0,
+    best_time_seconds INTEGER NOT NULL DEFAULT 0,
+    best_mistakes INTEGER NOT NULL DEFAULT 0,
+    best_hints_used INTEGER NOT NULL DEFAULT 0,
+    games_played INTEGER NOT NULL DEFAULT 0,
+    games_won INTEGER NOT NULL DEFAULT 0,
+    last_played_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_leaderboard_user_diff UNIQUE (user_id, difficulty)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_lb_difficulty_score ON leaderboard_entries(difficulty, best_score DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_lb_alien_id ON leaderboard_entries(alien_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_lb_user_id ON leaderboard_entries(user_id)`,
+
+  // Leaderboard updated_at trigger
+  `DROP TRIGGER IF EXISTS trg_leaderboard_updated_at ON leaderboard_entries`,
+  `CREATE TRIGGER trg_leaderboard_updated_at
+   BEFORE UPDATE ON leaderboard_entries
+   FOR EACH ROW
+   EXECUTE FUNCTION update_updated_at()`,
 ];
 
 async function main() {
@@ -121,9 +152,17 @@ async function main() {
   let applied = 0;
   let skipped = 0;
 
+  // Neon's sql() only supports tagged templates: sql`SELECT ...`
+  // For raw DDL strings (our migrations array), use sql.query() which
+  // accepts a plain string. Verified against @neondatabase/serverless v1.0.1.
+  if (typeof sql.query !== "function") {
+    console.error("❌ Neon sql.query() not available. Update @neondatabase/serverless to >=1.0.0");
+    process.exit(1);
+  }
+
   for (const migration of MIGRATIONS) {
     try {
-      await sql(migration);
+      await sql.query(migration);
       applied++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -140,15 +179,17 @@ async function main() {
 
   console.log(`✅ Migrations complete: ${applied} applied, ${skipped} already up-to-date.`);
 
-  // Verify schema by counting rows in each table.
+  // Verify schema by counting rows in each table (use tagged templates).
   try {
     const userCount = await sql`SELECT COUNT(*)::int AS count FROM users`;
     const txCount = await sql`SELECT COUNT(*)::int AS count FROM transactions`;
     const auditCount = await sql`SELECT COUNT(*)::int AS count FROM audit_log`;
+    const lbCount = await sql`SELECT COUNT(*)::int AS count FROM leaderboard_entries`;
     console.log(`📊 Schema verified:`);
     console.log(`   users: ${userCount[0].count} rows`);
     console.log(`   transactions: ${txCount[0].count} rows`);
     console.log(`   audit_log: ${auditCount[0].count} rows`);
+    console.log(`   leaderboard_entries: ${lbCount[0].count} rows`);
   } catch (err) {
     console.error("⚠️  Schema verification failed:", err);
   }

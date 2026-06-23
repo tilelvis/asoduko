@@ -235,19 +235,54 @@ The signing key **never leaves the server**. The client only sees the resulting 
    - `DATABASE_URL` — your NeonDB pooled connection string (from console.neon.tech)
    - `ALIEN_AUDIENCE` — your provider address
    - `WEBHOOK_PUBLIC_KEY` — from Dev Portal → Webhooks
-   - `ALIEN_WITHDRAW_PRIVATE_KEY` — generate a new Ed25519 keypair for your hot wallet
+   - `ALIEN_WITHDRAW_PRIVATE_KEY` — 64-char hex Ed25519 private key for your hot wallet
+   - `ALIEN_RPC_URL` — Alien network RPC endpoint (Solana-compatible JSON-RPC)
+   - `ALIEN_TOKEN_MINT` — SPL token mint address for ALIEN
+   - `ALIEN_TOKEN_DECIMALS` — defaults to 9
    - `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` — same as `ALIEN_AUDIENCE`
    - `WALLET_DAILY_EARN_CAP` (optional, default 500)
    - `WALLET_MIN_WITHDRAWAL` (optional, default 50)
    - `ALN_PER_ALIEN` (optional, default 10)
 
-2. **Database auto-migrates on every build** — the `prebuild` script (`scripts/migrate.mjs`) runs `CREATE TABLE IF NOT EXISTS` for `users`, `transactions`, and `audit_log` tables, plus all indexes. It's idempotent so it's safe to run on every deploy. Verify by checking the build logs for `✅ Migrations complete`.
+2. **Database auto-migrates on every build** — the `prebuild` script (`scripts/migrate.mjs`) runs `CREATE TABLE IF NOT EXISTS` for `users`, `transactions`, `audit_log`, and `leaderboard_entries` tables, plus all indexes. It's idempotent so it's safe to run on every deploy. Verify by checking the build logs for `✅ Migrations complete`.
 
 3. **Register the webhook** in the Dev Portal pointing to `https://your-vercel-url.vercel.app/api/webhooks/payment`
 
-4. **Fund the hot wallet** — send ALIEN tokens to the address corresponding to `ALIEN_WITHDRAW_PRIVATE_KEY`. This is the wallet that honors withdrawals. Keep it topped up; monitor the balance.
+4. **Fund the hot wallet** — send ALIEN tokens to the address corresponding to `ALIEN_WITHDRAW_PRIVATE_KEY`. This is the wallet that signs + broadcasts withdrawals. Keep it topped up; monitor the balance via the `getHotWalletBalance()` helper in `lib/alien/chain.ts`.
 
-5. **Wire up the real Alien chain SDK** — in `app/api/wallet/withdraw/route.ts`, replace the `broadcastAlienTransfer` stub with the actual Alien SDK call. The function signature is already correct.
+5. **Real chain SDK is wired up** — `lib/alien/chain.ts` uses `@solana/web3.js` + `@solana/spl-token` to sign and broadcast SPL token transfers (the Alien network is Solana-compatible). The hot wallet keypair is loaded from `ALIEN_WITHDRAW_PRIVATE_KEY` and never leaves the server process. Transactions are confirmed before returning, so the caller knows the transfer landed on-chain. If a native `@alien-id/chain` SDK ships in the future, swap the internals of `chain.ts` — the exported interface stays the same.
+
+---
+
+## Leaderboard
+
+Global per-tier leaderboard stored in NeonDB. Players compete for the highest score (= reward earned, which naturally rewards harder tiers + fewer hints + fewer errors). Tie-breaker: fastest time.
+
+### Schema
+
+- `leaderboard_entries` table — one row per `(user_id, difficulty)`, storing `best_score`, `best_time_seconds`, `best_mistakes`, `best_hints_used`, `games_played`, `games_won`.
+- UNIQUE constraint on `(user_id, difficulty)` — atomic upserts via `INSERT ... ON CONFLICT DO UPDATE`.
+- Index on `(difficulty, best_score DESC)` for fast top-N queries.
+
+### Endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/api/leaderboard/top?difficulty=X&limit=10` | Public | Top N players for a tier |
+| POST | `/api/leaderboard/submit` | JWT + gameSeed | Submit a solve score (server recomputes the score — client's claim is ignored) |
+| GET | `/api/leaderboard/rank?difficulty=X` | JWT | Player's rank + 2 neighbors above + 2 below |
+| GET | `/api/leaderboard/rank?all=true` | JWT | Player's best stats across all 6 tiers |
+
+### Anti-cheat
+
+- The server **re-computes the score** from `difficulty + mistakes + hintsUsed` using the same constants as `/api/wallet/claim`. The client's claimed score is ignored.
+- Skill metrics are validated against the tier's max (`mistakes <= maxMistakes`, `hintsUsed <= maxHints`).
+- `gameSeed` (UUID) ties the leaderboard submission to the claim — each game can only be submitted once.
+- Rate limited: 10 burst, 1 per 5s per user.
+
+### Auto-submission
+
+When a player solves a puzzle, the `awardSolve()` hook calls both `/api/wallet/claim` and `/api/leaderboard/submit` in sequence. The leaderboard submission is best-effort (fire-and-forget) — if it fails, the reward still credits. The win modal shows the player's new rank if it's a new personal best.
 
 ### Going to full anti-cheat
 

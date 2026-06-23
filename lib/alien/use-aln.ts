@@ -228,14 +228,18 @@ export function useAln() {
       hintsUsed: number;
       maxHints: number;
       gameSeed: string;
+      timeSeconds: number;
     }): Promise<{
       netReward: number;
       capped: boolean;
       capApplied: number;
       grossReward: number;
+      leaderboardRank?: number;
+      isNewBest?: boolean;
     } | null> => {
       if (isServerMode && authToken) {
         try {
+          // 1. Claim the reward (credits the wallet).
           const res = await fetch("/api/wallet/claim", {
             method: "POST",
             headers: {
@@ -256,11 +260,42 @@ export function useAln() {
           }
           const data = await res.json();
           await refresh();
+
+          // 2. Submit to the leaderboard (fire-and-forget, don't fail the
+          //    claim if the leaderboard submission fails).
+          let leaderboardRank: number | undefined;
+          let isNewBest: boolean | undefined;
+          try {
+            const lbRes = await fetch("/api/leaderboard/submit", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${authToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                difficulty: opts.difficulty,
+                mistakes: opts.mistakes,
+                hintsUsed: opts.hintsUsed,
+                timeSeconds: opts.timeSeconds,
+                gameSeed: opts.gameSeed,
+              }),
+            });
+            if (lbRes.ok) {
+              const lbData = await lbRes.json();
+              leaderboardRank = lbData.rank;
+              isNewBest = lbData.isNewBest;
+            }
+          } catch {
+            // Leaderboard is best-effort — don't fail the reward.
+          }
+
           return {
             netReward: data.breakdown.grossReward - data.breakdown.capApplied,
             capped: data.breakdown.capped,
             capApplied: data.breakdown.capApplied,
             grossReward: data.breakdown.grossReward,
+            leaderboardRank,
+            isNewBest,
           };
         } catch (e) {
           setLastError(e instanceof Error ? e.message : "Claim failed");

@@ -27,6 +27,7 @@ import { AlnStoreModal } from "@/components/alien/aln-store-modal";
 import { CaveatModal } from "@/components/alien/caveat-modal";
 import { RewardBreakdownModal } from "@/components/alien/reward-breakdown-modal";
 import { WithdrawModal } from "@/components/alien/withdraw-modal";
+import { LeaderboardModal } from "@/components/alien/leaderboard-modal";
 import { TierBanner } from "@/components/sudoku/tier-banner";
 import { Board, type CellRenderMeta } from "./board";
 import { NumberPad } from "./number-pad";
@@ -319,6 +320,7 @@ export function SudokuGame() {
   const [caveatOpen, setCaveatOpen] = useState(false);
   const [rewardOpen, setRewardOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [lastBreakdown, setLastBreakdown] = useState<RewardBreakdown | null>(null);
   const [entryDenied, setEntryDenied] = useState<Difficulty | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -357,6 +359,7 @@ export function SudokuGame() {
           hintsUsed,
           maxHints: state.maxHints,
           gameSeed: state.gameSeed,
+          timeSeconds: elapsed,
         })
         .then((result) => {
           if (cancelled || !result) return;
@@ -578,19 +581,22 @@ export function SudokuGame() {
     return Math.min(gross, remaining);
   }, [state.difficulty, state.mistakes, state.maxMistakes, state.hintsLeft, state.maxHints, aln.daily]);
 
-  // Listen for the open-caveats / open-store / open-withdraw events dispatched
-  // by the compact Controls action buttons.
+  // Listen for the open-caveats / open-store / open-withdraw / open-leaderboard
+  // events dispatched by the compact Controls action buttons.
   useEffect(() => {
     const openCaveats = () => setCaveatOpen(true);
     const openStore = () => setStoreOpen(true);
     const openWithdraw = () => setWithdrawOpen(true);
+    const openLeaderboard = () => setLeaderboardOpen(true);
     window.addEventListener("sudoku:open-caveats", openCaveats);
     window.addEventListener("sudoku:open-store", openStore);
     window.addEventListener("sudoku:open-withdraw", openWithdraw);
+    window.addEventListener("sudoku:open-leaderboard", openLeaderboard);
     return () => {
       window.removeEventListener("sudoku:open-caveats", openCaveats);
       window.removeEventListener("sudoku:open-store", openStore);
       window.removeEventListener("sudoku:open-withdraw", openWithdraw);
+      window.removeEventListener("sudoku:open-leaderboard", openLeaderboard);
     };
   }, []);
 
@@ -786,6 +792,12 @@ export function SudokuGame() {
         difficultyLabel={DIFFICULTY_META[state.difficulty].label}
       />
       <WithdrawModal open={withdrawOpen} onClose={() => setWithdrawOpen(false)} />
+      <LeaderboardModal
+        open={leaderboardOpen}
+        onClose={() => setLeaderboardOpen(false)}
+        currentDifficulty={state.difficulty}
+        authToken={aln.authToken ?? null}
+      />
     </div>
   );
 }
