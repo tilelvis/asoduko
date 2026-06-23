@@ -28,6 +28,7 @@ import { CaveatModal } from "@/components/alien/caveat-modal";
 import { RewardBreakdownModal } from "@/components/alien/reward-breakdown-modal";
 import { WithdrawModal } from "@/components/alien/withdraw-modal";
 import { LeaderboardModal } from "@/components/alien/leaderboard-modal";
+import { NewBestCelebration } from "@/components/alien/new-best-celebration";
 import { TierBanner } from "@/components/sudoku/tier-banner";
 import { Board, type CellRenderMeta } from "./board";
 import { NumberPad } from "./number-pad";
@@ -321,6 +322,13 @@ export function SudokuGame() {
   const [rewardOpen, setRewardOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [celebration, setCelebration] = useState<{
+    open: boolean;
+    rank: number;
+    totalPlayers: number;
+    score: number;
+    difficulty: Difficulty;
+  } | null>(null);
   const [lastBreakdown, setLastBreakdown] = useState<RewardBreakdown | null>(null);
   const [entryDenied, setEntryDenied] = useState<Difficulty | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -382,6 +390,24 @@ export function SudokuGame() {
             dailyCap: aln.daily.cap,
           });
           const t = setTimeout(() => setRewardOpen(true), 1100);
+
+          // Trigger the "new personal best" celebration if the server
+          // confirmed it's a new best AND we have a rank.
+          if (result.isNewBest && result.leaderboardRank && result.leaderboardRank > 0) {
+            const celebTimer = setTimeout(() => {
+              setCelebration({
+                open: true,
+                rank: result.leaderboardRank!,
+                totalPlayers: result.leaderboardTotalPlayers ?? 0,
+                score: result.grossReward,
+                difficulty: state.difficulty,
+              });
+            }, 1800);
+            return () => {
+              clearTimeout(t);
+              clearTimeout(celebTimer);
+            };
+          }
           return () => clearTimeout(t);
         });
       return () => {
@@ -797,6 +823,14 @@ export function SudokuGame() {
         onClose={() => setLeaderboardOpen(false)}
         currentDifficulty={state.difficulty}
         authToken={aln.authToken ?? null}
+      />
+      <NewBestCelebration
+        open={celebration?.open ?? false}
+        onClose={() => setCelebration(null)}
+        difficulty={celebration?.difficulty ?? state.difficulty}
+        rank={celebration?.rank ?? 0}
+        totalPlayers={celebration?.totalPlayers ?? 0}
+        score={celebration?.score ?? 0}
       />
     </div>
   );

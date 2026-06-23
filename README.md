@@ -284,6 +284,69 @@ Global per-tier leaderboard stored in NeonDB. Players compete for the highest sc
 
 When a player solves a puzzle, the `awardSolve()` hook calls both `/api/wallet/claim` and `/api/leaderboard/submit` in sequence. The leaderboard submission is best-effort (fire-and-forget) — if it fails, the reward still credits. The win modal shows the player's new rank if it's a new personal best.
 
+### "New personal best" celebration
+
+When the server confirms a new personal best (`isNewBest: true` from `/api/leaderboard/submit`), a full-screen celebration overlay triggers after the reward breakdown modal:
+
+- 40 pieces of neon confetti rain (6 colors, randomized fall + rotation)
+- "NEW PERSONAL BEST!" headline with glowing text animation
+- Tier name in the tier's accent color
+- Rank badge (🥇 #1 / 🥈 #2 / 🥉 #3 for top 3, plain #N otherwise)
+- Score + total player count
+- Auto-dismisses after 5.5s, or tap anywhere to dismiss early
+
+This is purely a client-side visual — the leaderboard itself is updated server-side regardless.
+
+---
+
+## Health Check
+
+`GET /api/health` — public endpoint (no auth) for uptime monitoring.
+
+Returns the operational status of all subsystems:
+
+```json
+{
+  "status": "operational",
+  "timestamp": "2026-06-22T15:30:00.000Z",
+  "total_latency_ms": 142,
+  "version": "1.0.0",
+  "environment": "production",
+  "checks": {
+    "database": {
+      "status": "ok",
+      "latency_ms": 38,
+      "detail": "4/4 tables present"
+    },
+    "auth": { "status": "ok", "detail": "ALIEN_AUDIENCE set (abc123…)" },
+    "webhook": { "status": "ok", "detail": "WEBHOOK_PUBLIC_KEY set (64 chars)" },
+    "withdrawal": {
+      "status": "ok",
+      "latency_ms": 95,
+      "detail": "Hot wallet 9a2b3c… · 245.50 ALIEN · 0.8421 SOL"
+    },
+    "deposit_recipient": { "status": "ok" },
+    "env": { "status": "ok" },
+    "wallet": { "status": "ok" }
+  }
+}
+```
+
+**Status codes**: `200` = operational, `503` = degraded (some subsystem failing).
+
+**Monitored subsystems**:
+- `database` — NeonDB connectivity + all 4 tables exist (users, transactions, audit_log, leaderboard_entries)
+- `auth` — `ALIEN_AUDIENCE` set (JWT verification)
+- `webhook` — `WEBHOOK_PUBLIC_KEY` set (deposit verification)
+- `withdrawal` — chain SDK configured + hot wallet ALIEN + SOL balance (best-effort RPC check; degraded if below `HOT_WALLET_LOW_THRESHOLD`, default 10 ALIEN)
+- `deposit_recipient` — `NEXT_PUBLIC_ALIEN_RECIPIENT_ADDRESS` set
+- `env` — all required server env vars valid
+- `wallet` — overall wallet subsystem operational
+
+**Monitoring setup**: Point [UptimeRobot](https://uptimerobot.com) / BetterStack / Vercel's built-in monitoring at `https://your-vercel-url.vercel.app/api/health`. Alert on any non-200 status. The `withdrawal` check is best-effort — a transient RPC outage degrades that check but doesn't fail the whole endpoint (so you don't get false alarms for the DB + auth subsystems).
+
+**Optional env var**: `HOT_WALLET_LOW_THRESHOLD` (default `10`) — ALIEN balance below this triggers a "degraded" withdrawal status, prompting you to top up the hot wallet.
+
 ### Going to full anti-cheat
 
 The current `claim` endpoint trusts the client's reported `mistakes` and `hintsUsed`. For full anti-cheat:

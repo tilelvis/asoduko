@@ -71,12 +71,14 @@ export async function submitLeaderboardScore(opts: {
   // Atomic upsert. The WHERE clause on the UPDATE ensures we only overwrite
   // best_score / best_time if the new score is strictly better, OR if the
   // score is equal and the time is faster.
+  // user_id is resolved via subquery from the users table (FK target).
   const rows = (await sql`
     INSERT INTO leaderboard_entries
-      (alien_id, difficulty, best_score, best_time_seconds, best_mistakes,
+      (user_id, alien_id, difficulty, best_score, best_time_seconds, best_mistakes,
        best_hints_used, games_played, games_won, last_played_at)
     VALUES
-      (${opts.alienId}, ${opts.difficulty}, ${opts.score}, ${opts.timeSeconds},
+      ((SELECT id FROM users WHERE alien_id = ${opts.alienId}),
+       ${opts.alienId}, ${opts.difficulty}, ${opts.score}, ${opts.timeSeconds},
        ${opts.mistakes}, ${opts.hintsUsed}, 1, ${opts.won ? 1 : 0}, now())
     ON CONFLICT (user_id, difficulty) DO UPDATE SET
       best_score = CASE

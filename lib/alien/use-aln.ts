@@ -235,6 +235,7 @@ export function useAln() {
       capApplied: number;
       grossReward: number;
       leaderboardRank?: number;
+      leaderboardTotalPlayers?: number;
       isNewBest?: boolean;
     } | null> => {
       if (isServerMode && authToken) {
@@ -264,6 +265,7 @@ export function useAln() {
           // 2. Submit to the leaderboard (fire-and-forget, don't fail the
           //    claim if the leaderboard submission fails).
           let leaderboardRank: number | undefined;
+          let leaderboardTotalPlayers: number | undefined;
           let isNewBest: boolean | undefined;
           try {
             const lbRes = await fetch("/api/leaderboard/submit", {
@@ -283,6 +285,7 @@ export function useAln() {
             if (lbRes.ok) {
               const lbData = await lbRes.json();
               leaderboardRank = lbData.rank;
+              leaderboardTotalPlayers = lbData.totalPlayers;
               isNewBest = lbData.isNewBest;
             }
           } catch {
@@ -295,6 +298,7 @@ export function useAln() {
             capApplied: data.breakdown.capApplied,
             grossReward: data.breakdown.grossReward,
             leaderboardRank,
+            leaderboardTotalPlayers,
             isNewBest,
           };
         } catch (e) {

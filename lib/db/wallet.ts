@@ -130,6 +130,10 @@ export async function creditWallet(opts: {
   if (opts.amount <= 0) throw new Error("Credit amount must be positive");
   const sql = requireSql();
 
+  // Ensure the user exists before any operation (FK requirement for
+  // transactions.user_id and the users table UPDATE below).
+  await sql`INSERT INTO users (alien_id) VALUES (${opts.alienId}) ON CONFLICT (alien_id) DO NOTHING`;
+
   // Check idempotency first (UNIQUE constraint at DB layer backs this up).
   const existing = (await sql`SELECT id FROM transactions WHERE idempotency_key = ${opts.idempotencyKey}`) as unknown[];
   if (existing.length > 0) {
@@ -165,12 +169,14 @@ export async function creditWallet(opts: {
 
   // Record the transaction. UNIQUE constraint on idempotency_key will throw
   // if a concurrent request slipped in — that's our replay protection.
+  // user_id is resolved via subquery from the users table (the FK target).
   try {
     await sql`
       INSERT INTO transactions
-        (alien_id, type, amount, status, description, invoice, tx_hash, idempotency_key, game_seed)
+        (user_id, alien_id, type, amount, status, description, invoice, tx_hash, idempotency_key, game_seed)
       VALUES
-        (${opts.alienId}, ${opts.type}, ${amountToCredit}, 'completed',
+        ((SELECT id FROM users WHERE alien_id = ${opts.alienId}),
+         ${opts.alienId}, ${opts.type}, ${amountToCredit}, 'completed',
          ${opts.description}, ${opts.invoice ?? null}, ${opts.txHash ?? null},
          ${opts.idempotencyKey}, ${opts.gameSeed ?? null})
     `;
@@ -210,6 +216,9 @@ export async function debitWallet(opts: {
   if (opts.amount <= 0) throw new Error("Debit amount must be positive");
   const sql = requireSql();
 
+  // Ensure the user exists before any operation (FK requirement).
+  await sql`INSERT INTO users (alien_id) VALUES (${opts.alienId}) ON CONFLICT (alien_id) DO NOTHING`;
+
   const existing = (await sql`SELECT id FROM transactions WHERE idempotency_key = ${opts.idempotencyKey}`) as unknown[];
   if (existing.length > 0) {
     throw new Error("IDEMPOTENCY_REPLAY");
@@ -233,9 +242,10 @@ export async function debitWallet(opts: {
   try {
     await sql`
       INSERT INTO transactions
-        (alien_id, type, amount, status, description, invoice, tx_hash, idempotency_key)
+        (user_id, alien_id, type, amount, status, description, invoice, tx_hash, idempotency_key)
       VALUES
-        (${opts.alienId}, ${opts.type}, ${-opts.amount}, 'completed',
+        ((SELECT id FROM users WHERE alien_id = ${opts.alienId}),
+         ${opts.alienId}, ${opts.type}, ${-opts.amount}, 'completed',
          ${opts.description}, ${opts.invoice ?? null}, ${opts.txHash ?? null},
          ${opts.idempotencyKey})
     `;
@@ -262,11 +272,14 @@ export async function recordPendingTransaction(opts: {
   invoice?: string;
 }): Promise<string> {
   const sql = requireSql();
+  // Ensure the user exists before inserting the transaction (FK requirement).
+  await sql`INSERT INTO users (alien_id) VALUES (${opts.alienId}) ON CONFLICT (alien_id) DO NOTHING`;
   const rows = (await sql`
     INSERT INTO transactions
-      (alien_id, type, amount, status, description, invoice, idempotency_key)
+      (user_id, alien_id, type, amount, status, description, invoice, idempotency_key)
     VALUES
-      (${opts.alienId}, ${opts.type}, ${opts.amount}, 'pending',
+      ((SELECT id FROM users WHERE alien_id = ${opts.alienId}),
+       ${opts.alienId}, ${opts.type}, ${opts.amount}, 'pending',
        ${opts.description}, ${opts.invoice ?? null}, ${opts.idempotencyKey})
     RETURNING id
   `) as Array<{ id: string }>;
